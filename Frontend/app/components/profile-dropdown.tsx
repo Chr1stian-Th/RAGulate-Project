@@ -142,15 +142,7 @@ export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDrop
                     <Moon className="w-3 h-3 mr-1" />
                     Dark
                   </Button>
-                  <Button
-                    variant={theme === "system" ? "default" : "ghost"}
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => setTheme("system")}
-                  >
-                    <Monitor className="w-3 h-3 mr-1" />
-                    Auto
-                  </Button>
+                  {/* Removed Auto button, but system remains default */}
                 </div>
               </div>
             </div>
