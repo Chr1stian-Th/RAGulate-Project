@@ -16,6 +16,10 @@ import { ProfileModal } from "./components/profile-modal"
 import { SettingsModal } from "./components/settings-modal"
 import { ThemeProvider } from "./components/theme-provider"
 
+// Backend URL for the chat API
+const BACKEND_URL = "http://134.60.71.197:8000";
+
+
 interface Message {
   id: string
   role: "user" | "assistant"
@@ -90,7 +94,7 @@ export default function GDPRChatbot() {
         formData.append(`file_${index}`, file)
       })
 
-      const response = await fetch("/api/chat", {
+      const response = await fetch(BACKEND_URL+"/api/chat", {
         method: "POST",
         body: formData,
       })
@@ -104,7 +108,7 @@ export default function GDPRChatbot() {
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: data.response,
+        content: data.answer,
         timestamp: new Date(),
       }
 
@@ -149,9 +153,12 @@ export default function GDPRChatbot() {
     }
   }
 
+// Check if a chat session has been created on initial load if not create a new one
+const hasCreatedChat = useRef(false);
   useEffect(() => {
-    if (chatSessions.length === 0) {
-      createNewChat()
+    if (!hasCreatedChat.current && chatSessions.length === 0) {
+      createNewChat();
+      hasCreatedChat.current = true;
     }
   }, [])
 
@@ -241,24 +248,10 @@ export default function GDPRChatbot() {
               {messages.length === 0 && (
                 <div className="text-center py-12">
                   <Shield className="w-12 h-12 text-blue-600 mx-auto mb-4" />
-                  <h2 className="text-xl font-semibold mb-2">Welcome to GDPR Assistant</h2>
+                  <h2 className="text-xl font-semibold mb-2">Welcome to the RAGulate GDPR Assistant</h2>
                   <p className="text-gray-600 mb-4">
                     I'm here to help you understand and comply with GDPR regulations.
                   </p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl mx-auto">
-                    <Card className="p-4 cursor-pointer hover:bg-gray-50 transition-colors">
-                      <h3 className="font-medium mb-2">Data Processing Questions</h3>
-                      <p className="text-sm text-gray-600">
-                        Ask about lawful basis, consent, and data processing requirements
-                      </p>
-                    </Card>
-                    <Card className="p-4 cursor-pointer hover:bg-gray-50 transition-colors">
-                      <h3 className="font-medium mb-2">Rights & Compliance</h3>
-                      <p className="text-sm text-gray-600">
-                        Learn about data subject rights and compliance obligations
-                      </p>
-                    </Card>
-                  </div>
                 </div>
               )}
 
