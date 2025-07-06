@@ -1,5 +1,6 @@
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { User, Shield, Paperclip } from "lucide-react"
+import { User, Shield, Paperclip, Copy, ThumbsUp, ThumbsDown } from "lucide-react"
+import { useState } from "react"
 
 interface Message {
   id: string
@@ -15,6 +16,31 @@ interface ChatMessageProps {
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user"
+  const [feedback, setFeedback] = useState<null | "up" | "down">(null)
+  const [copied, setCopied] = useState(false)
+
+  // Dummy object_id for feedback
+  const object_id = message.id
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(message.content)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  const handleFeedback = async (type: "up" | "down") => {
+    setFeedback(type)
+    // Send feedback to backend (placeholder)
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ object_id, feedback: type }),
+      })
+    } catch (err) {
+      console.error("Error sending feedback:", err)
+    }
+  }
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
@@ -46,7 +72,36 @@ export function ChatMessage({ message }: ChatMessageProps) {
               </div>
             )}
 
-            <div className="whitespace-pre-wrap">{message.content}</div>
+            <div className="whitespace-pre-wrap relative">
+              {message.content}
+              {/* Copy and feedback buttons for assistant messages only */}
+              {!isUser && (
+                <div className="flex gap-2 mt-2 items-center">
+                  <button
+                    onClick={handleCopy}
+                    className="p-1 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-900 transition-colors"
+                    title="Copy answer"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleFeedback("up")}
+                    className={`p-1 rounded hover:bg-green-100 text-gray-500 hover:text-green-600 transition-colors ${feedback === "up" ? "bg-green-200 text-green-700" : ""}`}
+                    title="Mark as good reaction"
+                  >
+                    <ThumbsUp className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleFeedback("down")}
+                    className={`p-1 rounded hover:bg-red-100 text-gray-500 hover:text-red-600 transition-colors ${feedback === "down" ? "bg-red-200 text-red-700" : ""}`}
+                    title="Mark as bad reaction"
+                  >
+                    <ThumbsDown className="w-4 h-4" />
+                  </button>
+                  {copied && <span className="text-xs text-green-600 ml-2">Copied!</span>}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className={`text-xs text-gray-500 mt-1 ${isUser ? "text-right" : "text-left"}`}>
