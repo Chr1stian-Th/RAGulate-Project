@@ -90,7 +90,7 @@ def chat():
         print("Inserted Doc ID:", result_user.inserted_id)
         
         # Generate LLM response
-        #TODO add session id + identifier to this, so only your own queries are used for conversation history; needed in backeng_generate_prompt.py
+        #TODO add session id + identifier to this, so only your own queries are used for conversation history; needed in backend_generate_prompt.py
         ai_response = generate_gdpr_response(message, uploaded_files)
         
         #session id + role + content + timestamp
@@ -127,6 +127,10 @@ def get_session(session_id):
     results = list(collection.find(
         {"session_id": session_id}).sort("timestamp", 1) # 1 = ascending, -1 = descending
     )
+    # Convert ObjectId to string
+    for result in results:
+        result["_id"] = str(result["_id"])
+
     if results: 
         return jsonify(results)
     else:

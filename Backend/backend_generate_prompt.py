@@ -129,10 +129,10 @@ def format_conversation(entries):
 
 # Perform naive search, return the output
 async def generate_output(input: str):
-    print(input)
+    #print(input)
     rag = asyncio.run(initialize_rag())
 
-    # Get last 6 conversation entries from mongoDB
+    # Get last *limit* conversation entries from mongoDB
     raw_entries = get_last_conversations(collection)
     #Format into conv_history format
     conv_history = format_conversation(raw_entries) #Format:[{"role": "user/assistant", "content": "message"}]
