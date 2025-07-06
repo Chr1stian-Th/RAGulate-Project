@@ -1,118 +1,154 @@
-# backend_generate_prompt.py
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import torch
+import json
+from datetime import datetime
+import uuid
+from werkzeug.utils import secure_filename
+from backend_generate_prompt import generate_output
 import asyncio
-import nest_asyncio
-from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from lightrag import LightRAG, QueryParam
-from lightrag.llm.hf import hf_embed
-from lightrag.utils import EmbeddingFunc
-from lightrag.kg.shared_storage import initialize_pipeline_status
+from pymongo import MongoClient
+import signal
 
-nest_asyncio.apply()
+app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
-WORKING_DIR = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data"
+# Configuration
+UPLOAD_FOLDER = 'uploads'
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'csv', 'xlsx'}
+MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
 
-if not os.path.exists(WORKING_DIR):
-    os.mkdir(WORKING_DIR)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-# Configure Model and tokenizer etc
-hf_model_name = "mistralai/Mistral-7B-Instruct-v0.2"
-hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
-hf_model = AutoModelForCausalLM.from_pretrained(hf_model_name)
+# Create upload directory if it doesn't exist
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-hf_tokenizer.pad_token = hf_tokenizer.eos_token
-hf_model.config.pad_token_id = hf_tokenizer.pad_token_id
-hf_model.eval()
+# Connect to MongoDB
+client = MongoClient("mongodb://localhost:27017/")
 
-# Format String and setup LightRAG
-def _hf_generate(prompt: str) -> str:
-    formatted_prompt = f"<s>[INST] {prompt} [/INST]"
-    inputs = hf_tokenizer(
-        formatted_prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512,
-        padding=True
-    )
+# Select database and collection
+db = client["RAGulate"]  
+collection = db["chatlogs"]
 
-    attention_mask = inputs["attention_mask"]
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-    with torch.no_grad():
-        outputs = hf_model.generate(
-            inputs.input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=512,
-            pad_token_id=hf_tokenizer.pad_token_id,
-            eos_token_id=hf_tokenizer.eos_token_id
-        )
-    return hf_tokenizer.decode(outputs[0], skip_special_tokens=True)
+def generate_gdpr_response(message, files=None):
 
-async def hf_model_complete(prompt: str, **kwargs) -> str:
+    # Run async RAG query in sync Flask context
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _hf_generate, prompt)
-
-# Initialize LightRAG once
-async def initialize_rag():
-    rag = LightRAG(
-        working_dir=WORKING_DIR,
-        llm_model_func=hf_model_complete,
-        llm_model_name=hf_model_name,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=384,
-            max_token_size=5000,
-            func=lambda texts: hf_embed(
-                texts,
-                tokenizer=AutoTokenizer.from_pretrained(
-                    "sentence-transformers/all-MiniLM-L6-v2"
-                ),
-                embed_model=AutoModel.from_pretrained(
-                    "sentence-transformers/all-MiniLM-L6-v2"
-                ),
-            ),
-        ),
-    )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-    print("Finished Initializing!")
-    return rag
-
-# Cache RAG instance across calls // TODO IF Performance is shit, resulted in issues earlier
-#_rag_instance = None
-
-#async def get_rag():
-#    global _rag_instance
-#    if _rag_instance is None:
-#        _rag_instance = await initialize_rag()
-#    return _rag_instance
-
-# Process Query - used in backend_api.py
-#async def query_rag(prompt: str) -> str:
-    #rag = await get_rag()
-    #rag = asyncio.run(initialize_rag())
-    #return rag.query(prompt, param=QueryParam(mode="naive"))
-
-#Test call of function
-#async def main():
-    #await query_rag("Was ist Artikel 5 der DSGVO?")
-
-#asyncio.run(main())
-
-# Perform naive search, return the output
-async def generate_output(input: str):
-    rag = asyncio.run(initialize_rag())
-
-    result = rag.query(input, param=QueryParam(mode="naive"))
-
-    #Split the String to remove the prompt
-    # Split at the INST markers
-    parts = result.split("[/INST]", 1)
-    string1 = parts[0].replace("[INST]", "").strip()
-    string2 = parts[1].strip()
-    print(string1)
-    print(string2)
-    return string2
+    if loop.is_running():
+        response = asyncio.ensure_future(generate_output(message))
+    else:
+        response = loop.run_until_complete(generate_output(message))
     
+    return response.result() if hasattr(response, 'result') else response
 
-#if __name__ == "__main__":
-    #generate_output("Was ist Artikel 5 der DSGVO?")
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    try:
+        # Get form data
+        message = request.form.get('message', '')
+        session_id = request.form.get('sessionId', str(uuid.uuid4()))
+        timestamp = request.form.get('timestamp', datetime.now().isoformat())
+        
+        # Handle uploaded files
+        uploaded_files = []
+        for key in request.files:
+            if key.startswith('file_'):
+                file = request.files[key]
+                if file and file.filename and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    # Add timestamp to avoid filename conflicts
+                    unique_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                    file.save(file_path)
+                    
+                    uploaded_files.append({
+                        'name': filename,
+                        'path': file_path,
+                        'size': os.path.getsize(file_path),
+                        'type': file.content_type
+                    })
+        
+        #session id + role + content + timestamp + Files processed 
+        # TODO add identifier behind user once user management is implemented (also for assistant; for chat history with multiple users)
+        #user message
+        user_data = {
+            'role': 'user',
+            'content': message,
+            'timestamp': timestamp,
+            'files': uploaded_files,
+            'session_id': session_id
+        }
+        #Insert Data
+        result_user = collection.insert_one(user_data)
+
+        #Show the inserted Document ID
+        print("Inserted Doc ID:", result_user.inserted_id)
+        
+        # Generate LLM response
+        #TODO add session id + identifier to this, so only your own queries are used for conversation history; needed in backeng_generate_prompt.py
+        ai_response = generate_gdpr_response(message, uploaded_files)
+        
+        #session id + role + content + timestamp
+        # Add LLM response to database
+        assistant_message = {
+            'role': 'assistant',
+            'content': ai_response,
+            'timestamp': datetime.now().isoformat(),
+            'session_id': session_id
+        }
+        #Insert Data
+        result_assistant = collection.insert_one(assistant_message)
+
+        #Show the inserted Document ID
+        print("Inserted Doc ID:", result_assistant.inserted_id)
+        
+        return jsonify({
+            'answer': ai_response,
+            'sessionId': session_id,
+            'timestamp': datetime.now().isoformat(),
+            'filesProcessed': len(uploaded_files)
+        })
+        
+    except Exception as e:
+        print(f"Error processing chat request: {str(e)}")
+        return jsonify({
+            'error': 'Failed to process request',
+            'details': str(e)
+        }), 500
+
+@app.route('/api/sessions/<session_id>', methods=['GET'])
+def get_session(session_id):
+    """Get chat session history"""
+    results = list(collection.find(
+        {"session_id": session_id}).sort("timestamp", 1) # 1 = ascending, -1 = descending
+    )
+    if results: 
+        return jsonify(results)
+    else:
+        return jsonify({'error': 'Session not found'}), 404
+
+@app.route('/api/sessions', methods=['GET'])
+def list_sessions():
+    """List all chat sessions"""
+    unique_sessions = db.sessions.distinct("session_id")
+    return jsonify({'sessions': unique_sessions})
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.0.0'
+    })
+
+if __name__ == '__main__':
+    print("Starting GDPR Chatbot Backend Server...")
+    print(f"Upload folder: {UPLOAD_FOLDER}")
+    print(f"Allowed file extensions: {ALLOWED_EXTENSIONS}")
+    app.run(host='134.60.71.197', port=8000)

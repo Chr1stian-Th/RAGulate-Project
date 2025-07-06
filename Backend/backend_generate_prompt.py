@@ -8,6 +8,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.hf import hf_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status
+from pymongo import MongoClient
 
 nest_asyncio.apply()
 
@@ -77,7 +78,7 @@ async def initialize_rag():
     print("Finished Initializing!")
     return rag
 
-# Cache RAG instance across calls // TODO IF Performance is shit, resulted in issues earlier
+# Cache RAG instance across calls // TODO IF Performance is bad, resulted in issues earlier
 #_rag_instance = None
 
 #async def get_rag():
@@ -98,11 +99,54 @@ async def initialize_rag():
 
 #asyncio.run(main())
 
+# Connect to MongoDB
+client = MongoClient("mongodb://localhost:27017/")
+
+# Select database and collection
+db = client["RAGulate"]  
+collection = db["chatlogs"]
+
+#limit for cutoff
+limit = 3
+
+#Get last *limit entries in mongoDB sorted by timestamp
+def get_last_conversations(collection):
+    entries = list(
+        collection.find().sort("timestamp", 1)
+    )
+    return entries
+
+# Function to format into correct Format from JSON
+def format_conversation(entries):
+    conv_history = []
+    for entry in entries:
+        conv_history.append({
+            "role": entry.get("role", "user"),      # fallback to "user" if missing
+            "content": entry.get("content", "")
+        })
+    conv_history = conv_history[-limit:]
+    return conv_history
+
 # Perform naive search, return the output
 async def generate_output(input: str):
+    print(input)
     rag = asyncio.run(initialize_rag())
 
-    result = rag.query(input, param=QueryParam(mode="naive"))
+    # Get last 6 conversation entries from mongoDB
+    raw_entries = get_last_conversations(collection)
+    #Format into conv_history format
+    conv_history = format_conversation(raw_entries) #Format:[{"role": "user/assistant", "content": "message"}]
+    print(conv_history)
+
+    #Set Parameters of query
+    query_param_settings = QueryParam(
+        mode="naive",
+    #)
+        conversation_history=conv_history,
+        history_turns = 1)
+
+    result = rag.query(input, param=query_param_settings)
+    #result = rag.query(input, param=QueryParam(mode="naive"))
 
     #Split the String to remove the prompt
     # Split at the INST markers
@@ -112,6 +156,7 @@ async def generate_output(input: str):
     print(string1)
     print(string2)
     return string2
+    
     
 
 #if __name__ == "__main__":
