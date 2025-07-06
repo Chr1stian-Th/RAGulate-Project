@@ -90,7 +90,7 @@ def chat():
         print("Inserted Doc ID:", result_user.inserted_id)
         
         # Generate LLM response
-        #TODO add session id + identifier to this, so only your own queries are used for conversation history; needed in backend_generate_prompt.py
+        #TODO add session id + identifier to this, so only your own queries are used for conversation history; needed in backeng_generate_prompt.py
         ai_response = generate_gdpr_response(message, uploaded_files)
         
         #session id + role + content + timestamp
@@ -150,6 +150,30 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'version': '1.0.0'
     })
+
+@app.route('/api/feedback', methods=['POST'])
+def submit_feedback():
+    try:
+        data = request.get_json()
+        object_id = data.get('object_id')
+        feedback = data.get('feedback')
+
+        #print(object_id)
+
+        # Update the document
+        result = collection.update_one(
+            {'content': object_id},
+            {'$set': {'feedback': feedback}}
+        )
+
+        if result.matched_count == 0:
+            return jsonify({'error': 'Document not found.'}), 404
+
+        return jsonify({'message': 'Feedback saved successfully.'}), 200
+
+    except Exception as e:
+        print(f"Error in /api/feedback: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred.'}), 500
 
 if __name__ == '__main__':
     print("Starting GDPR Chatbot Backend Server...")

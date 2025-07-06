@@ -14,13 +14,15 @@ interface ChatMessageProps {
   message: Message
 }
 
+const BACKEND_URL = "http://134.60.71.197:8000"
+
 export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user"
-  const [feedback, setFeedback] = useState<null | "up" | "down">(null)
+  const [feedback, setFeedback] = useState<null | "good" | "bad">(null)
   const [copied, setCopied] = useState(false)
 
-  // Dummy object_id for feedback
-  const object_id = message.id
+  // Use message content as object_id for feedback
+  const object_id = message.content
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content)
@@ -28,11 +30,11 @@ export function ChatMessage({ message }: ChatMessageProps) {
     setTimeout(() => setCopied(false), 1500)
   }
 
-  const handleFeedback = async (type: "up" | "down") => {
+  const handleFeedback = async (type: "good" | "bad") => {
     setFeedback(type)
-    // Send feedback to backend (placeholder)
+    // Send feedback to backend with timestamp as object_id
     try {
-      await fetch("/api/feedback", {
+      await fetch(BACKEND_URL + "/api/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ object_id, feedback: type }),
@@ -85,15 +87,15 @@ export function ChatMessage({ message }: ChatMessageProps) {
                     <Copy className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => handleFeedback("up")}
-                    className={`p-1 rounded hover:bg-green-100 text-gray-500 hover:text-green-600 transition-colors ${feedback === "up" ? "bg-green-200 text-green-700" : ""}`}
+                    onClick={() => handleFeedback("good")}
+                    className={`p-1 rounded hover:bg-green-100 text-gray-500 hover:text-green-600 transition-colors ${feedback === "good" ? "bg-green-200 text-green-700" : ""}`}
                     title="Mark as good reaction"
                   >
                     <ThumbsUp className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => handleFeedback("down")}
-                    className={`p-1 rounded hover:bg-red-100 text-gray-500 hover:text-red-600 transition-colors ${feedback === "down" ? "bg-red-200 text-red-700" : ""}`}
+                    onClick={() => handleFeedback("bad")}
+                    className={`p-1 rounded hover:bg-red-100 text-gray-500 hover:text-red-600 transition-colors ${feedback === "bad" ? "bg-red-200 text-red-700" : ""}`}
                     title="Mark as bad reaction"
                   >
                     <ThumbsDown className="w-4 h-4" />
