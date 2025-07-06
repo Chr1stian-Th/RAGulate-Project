@@ -33,6 +33,7 @@ interface ChatSession {
   title: string
   messages: Message[]
   createdAt: Date
+  sessionID: string
 }
 
 export default function GDPRChatbot() {
@@ -47,6 +48,8 @@ export default function GDPRChatbot() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [showProfileModal, setShowProfileModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editedTitle, setEditedTitle] = useState<string>("")
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -56,12 +59,19 @@ export default function GDPRChatbot() {
     scrollToBottom()
   }, [messages])
 
+  // Helper to generate a unique sessionID
+  const generateSessionID = () => {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+  }
+
   const createNewChat = () => {
+    const newSessionId = generateSessionID()
     const newSession: ChatSession = {
       id: Date.now().toString(),
       title: "New GDPR Consultation",
       messages: [],
       createdAt: new Date(),
+      sessionID: newSessionId // Set sessionID to a unique value
     }
     setChatSessions((prev) => [newSession, ...prev])
     setCurrentSessionId(newSession.id)
@@ -88,13 +98,15 @@ export default function GDPRChatbot() {
     try {
       const formData = new FormData()
       formData.append("message", input)
-      formData.append("sessionId", currentSessionId || "")
+      // Always use the sessionID from the current session object
+      const currentSession = chatSessions.find(s => s.id === currentSessionId)
+      formData.append("sessionId", currentSession?.sessionID || "")
 
       uploadedFiles.forEach((file, index) => {
         formData.append(`file_${index}`, file)
       })
 
-      const response = await fetch(BACKEND_URL+"/api/chat", {
+      const response = await fetch(BACKEND_URL + "/api/chat", {
         method: "POST",
         body: formData,
       })
@@ -162,6 +174,15 @@ const hasCreatedChat = useRef(false);
     }
   }, [])
 
+  useEffect(() => {
+    if (currentSessionId) {
+      const session = chatSessions.find(s => s.id === currentSessionId);
+      if (session) {
+        console.log("Current sessionID:", session.sessionID);
+      }
+    }
+  }, [chatSessions, currentSessionId]);
+
   return (
     <ThemeProvider>
       <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
@@ -190,20 +211,69 @@ const hasCreatedChat = useRef(false);
                 }`}
               >
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{session.title}</div>
+                  {editingSessionId === session.id ? (
+                    <form
+                      onSubmit={e => {
+                        e.preventDefault()
+                        setChatSessions(prev => prev.map(s =>
+                          s.id === session.id ? { ...s, title: editedTitle } : s
+                        ))
+                        setEditingSessionId(null)
+                      }}
+                    >
+                      <input
+                        className="text-sm font-medium bg-gray-800 text-white rounded px-1 w-full"
+                        value={editedTitle}
+                        onChange={e => setEditedTitle(e.target.value)}
+                        autoFocus
+                        onBlur={() => setEditingSessionId(null)}
+                      />
+                    </form>
+                  ) : (
+                    <div className="flex items-center">
+                      <div
+                        className="text-sm font-medium truncate cursor-pointer"
+                        onClick={e => {
+                          e.stopPropagation()
+                          setEditingSessionId(session.id)
+                          setEditedTitle(session.title)
+                        }}
+                        title="Click to edit title"
+                      >
+                        {session.title}
+                      </div>
+                    </div>
+                  )}
                   <div className="text-xs text-gray-400">{session.createdAt.toLocaleDateString()}</div>
                 </div>
-                <button
-                  className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500"
-                  onClick={e => {
-                    e.stopPropagation()
-                    deleteChatSession(session.id)
-                  }}
-                  aria-label="Delete chat"
-                  tabIndex={0}
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex flex-row items-center justify-center">
+                  <button
+                    className="ml-1 mr-1 opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-white p-1 rounded hover:bg-gray-700"
+                    onClick={e => {
+                      e.stopPropagation()
+                      setEditingSessionId(session.id)
+                      setEditedTitle(session.title)
+                    }}
+                    tabIndex={0}
+                    aria-label="Edit chat title"
+                    type="button"
+                    style={{marginRight: '0.25rem'}}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 112.828 2.828L11.828 15.828a4 4 0 01-1.414.828l-4 1a1 1 0 01-1.263-1.263l1-4a4 4 0 01.828-1.414z" /></svg>
+                  </button>
+                  <button
+                    className="opacity-0 group-hover:opacity-100 transition-opacity text-gray-400 hover:text-red-500 p-1 rounded"
+                    onClick={e => {
+                      e.stopPropagation()
+                      deleteChatSession(session.id)
+                    }}
+                    aria-label="Delete chat"
+                    tabIndex={0}
+                    type="button"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </ScrollArea>
