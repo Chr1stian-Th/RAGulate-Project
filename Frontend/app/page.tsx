@@ -15,6 +15,7 @@ import { ProfileDropdown } from "./components/profile-dropdown"
 import { ProfileModal } from "./components/profile-modal"
 import { SettingsModal } from "./components/settings-modal"
 import { ThemeProvider } from "./components/theme-provider"
+import { AuthModal } from "./components/auth-modal"
 
 // Backend URL for the chat API
 const BACKEND_URL = "http://134.60.71.197:8000";
@@ -50,6 +51,11 @@ export default function GDPRChatbot() {
   const [showSettingsModal, setShowSettingsModal] = useState(false)
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editedTitle, setEditedTitle] = useState<string>("")
+  const [showAuthModal, setShowAuthModal] = useState(true)
+
+  // Store sessions after login
+  const [userSessions, setUserSessions] = useState<any[]>([])
+  // Username state will be managed by context
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -183,8 +189,18 @@ const hasCreatedChat = useRef(false);
     }
   }, [chatSessions, currentSessionId]);
 
+  // Handler for successful login
+  // Handler for successful login
+  const handleLoginSuccess = (sessions: any) => {
+    setUserSessions(sessions)
+    setShowAuthModal(false)
+    // Optionally, load sessions into chatSessions here
+    // setChatSessions(sessions)
+  }
+
   return (
     <ThemeProvider>
+      {showAuthModal && <AuthModal onLoginSuccess={handleLoginSuccess} />}
       <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
         {/* Sidebar */}
         <div className="w-64 bg-gray-900 text-white flex flex-col">

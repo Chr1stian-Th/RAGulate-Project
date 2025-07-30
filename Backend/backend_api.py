@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 import os
 import json
@@ -27,9 +28,64 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # Connect to MongoDB
 client = MongoClient("mongodb://localhost:27017/")
 
-# Select database and collection
-db = client["RAGulate"]  
+db = client["RAGulate"]
+# Collection for chat logs
 collection = db["chatlogs"]
+# Collection for user management
+user_collection = db["usermanagement"]
+@app.route('/api/register', methods=['POST'])
+def register():
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+
+        if not username or not password:
+            return jsonify({'error': 'Username and password required.'}), 400
+
+        # Check if username already exists
+        if user_collection.find_one({'username': username}):
+            return jsonify({'error': 'Username is already taken.'}), 409
+
+        # Hash the password
+        hashed_password = generate_password_hash(password)
+
+        # Insert new user
+        user_collection.insert_one({
+            'username': username,
+            'password': hashed_password
+        })
+
+        return jsonify({'message': 'User registered successfully.'}), 201
+
+    except Exception as e:
+        print(f"Error in /api/register: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred.'}), 500
+    
+@app.route('/api/login', methods=['POST'])
+def login():
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+
+        if not username or not password:
+            return jsonify({'error': 'Username and password required.'}), 400
+
+        user = user_collection.find_one({'username': username})
+
+        if not user:
+            return jsonify({'error': 'User not found.'}), 404
+
+        # Verify password
+        if not check_password_hash(user['password'], password):
+            return jsonify({'error': 'Invalid password.'}), 401
+
+        return jsonify({'message': 'Login successful.'}), 200
+
+    except Exception as e:
+        print(f"Error in /api/login: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred.'}), 500
 
 def allowed_file(filename):
     return '.' in filename and \

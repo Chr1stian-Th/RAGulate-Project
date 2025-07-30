@@ -1,8 +1,8 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef, useEffect } from "react"
+import { useUsername } from "../username-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -17,45 +17,32 @@ interface ProfileModalProps {
 
 interface UserProfile {
   name: string
-  email: string
   avatar: string
-  bio: string
-  company: string
-  role: string
-  phone: string
 }
 
 export function ProfileModal({ onClose }: ProfileModalProps) {
+  const { username, setUsername } = useUsername()
   const [profile, setProfile] = useState<UserProfile>({
-    name: "John Doe",
-    email: "john.doe@company.com",
+    name: username,
     avatar: "",
-    bio: "GDPR Compliance Officer with 5+ years of experience in data protection and privacy law.",
-    company: "Privacy Solutions Inc.",
-    role: "Data Protection Officer",
-    phone: "+1 (555) 123-4567",
   })
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    setProfile((prev) => ({ ...prev, name: username }))
     // Load profile from localStorage
     const savedProfile = localStorage.getItem("userProfile")
     if (savedProfile) {
-      setProfile(JSON.parse(savedProfile))
+      setProfile((prev) => ({ ...prev, ...JSON.parse(savedProfile) }))
     }
-  }, [])
+  }, [username])
 
   const handleSave = async () => {
     setIsSaving(true)
-
-    // API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    // Save to localStorage
+    setUsername(profile.name)
     localStorage.setItem("userProfile", JSON.stringify(profile))
-
     setIsSaving(false)
     setIsEditing(false)
   }
@@ -117,70 +104,15 @@ export function ProfileModal({ onClose }: ProfileModalProps) {
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
           </div>
 
-          {/* Profile Form */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="name">Full Name</Label>
-              <Input
-                id="name"
-                value={profile.name}
-                onChange={(e) => setProfile((prev) => ({ ...prev, name: e.target.value }))}
-                disabled={!isEditing}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                value={profile.email}
-                onChange={(e) => setProfile((prev) => ({ ...prev, email: e.target.value }))}
-                disabled={!isEditing}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="company">Company</Label>
-              <Input
-                id="company"
-                value={profile.company}
-                onChange={(e) => setProfile((prev) => ({ ...prev, company: e.target.value }))}
-                disabled={!isEditing}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="role">Role</Label>
-              <Input
-                id="role"
-                value={profile.role}
-                onChange={(e) => setProfile((prev) => ({ ...prev, role: e.target.value }))}
-                disabled={!isEditing}
-              />
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="phone">Phone</Label>
-              <Input
-                id="phone"
-                value={profile.phone}
-                onChange={(e) => setProfile((prev) => ({ ...prev, phone: e.target.value }))}
-                disabled={!isEditing}
-              />
-            </div>
-
-            <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="bio">Bio</Label>
-              <Textarea
-                id="bio"
-                value={profile.bio}
-                onChange={(e) => setProfile((prev) => ({ ...prev, bio: e.target.value }))}
-                disabled={!isEditing}
-                rows={3}
-                placeholder="Tell us about yourself..."
-              />
-            </div>
+          {/* Profile Form: Only Name */}
+          <div className="space-y-2">
+            <Label htmlFor="name">Username</Label>
+            <Input
+              id="name"
+              value={profile.name}
+              onChange={(e) => setProfile((prev) => ({ ...prev, name: e.target.value }))}
+              disabled={!isEditing}
+            />
           </div>
 
           {/* Action Buttons */}
