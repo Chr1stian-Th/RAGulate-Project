@@ -17,7 +17,23 @@ const ForceGraph2D = dynamic(
 
 export function GraphOverlay({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [data, setData] = useState<{nodes:any[];links:any[]}>({ nodes: [], links: [] })
+  const [dimensions, setDimensions] = useState({
+    width: window.innerWidth * 0.95,
+    height: window.innerHeight * 0.85
+  });
 
+  // Handle window resize
+  useEffect(() => {
+    const handleResize = () => {
+      setDimensions({
+        width: window.innerWidth * 0.95,
+        height: window.innerHeight * 0.85
+      });
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     if (!open) return
@@ -32,17 +48,19 @@ export function GraphOverlay({ open, onClose }: { open: boolean; onClose: () => 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40">
-      <div className="absolute right-0 top-0 h-full w-[min(900px,100%)] bg-white dark:bg-gray-900 shadow-xl">
-        <div className="flex items-center justify-between px-3 h-12 border-b">
-          <div className="font-medium">Graph Viewer</div>
-          <Button variant="ghost" onClick={onClose}>Minimize</Button>
+      <div className="absolute left-[2.5vw] top-[2.5vh] h-[95vh] w-[95vw] bg-white dark:bg-gray-900 shadow-xl rounded-lg">
+        <div className="flex items-center justify-between px-6 h-14 border-b">
+          <div className="text-xl font-medium">Graph Viewer</div>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
         </div>
-        <div className="h-[calc(100%-48px)]">
+        <div className="h-[calc(100%-56px)]">
           <ForceGraph2D
             graphData={data}
             nodeLabel="name"
             linkDirectionalParticles={1}
             linkDirectionalParticleSpeed={0.005}
+            width={dimensions.width}
+            height={dimensions.height}
           />
         </div>
       </div>

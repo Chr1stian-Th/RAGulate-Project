@@ -7,6 +7,7 @@ from datetime import datetime
 import uuid
 from werkzeug.utils import secure_filename
 from backend_generate_prompt import generate_output
+from backend_documents import insert_uploaded_files_to_rag, read_kv_store_status
 import asyncio
 from pymongo import MongoClient
 import signal
@@ -18,6 +19,11 @@ CORS(app)  # Enable CORS for all routes
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'csv', 'xlsx'}
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
+# Separate limit for the /api/documents/insert endpoint
+MAX_DOCS_PER_INSERT = int(os.getenv('RAG_MAX_DOCS_PER_INSERT', '1'))
+
+# Path for LightRAG's kv store status
+KV_STATUS_PATH = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data/kv_store_doc_status.json"
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
@@ -93,15 +99,13 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def generate_gdpr_response(message, session_id, files=None):
-
     # Run async RAG query in sync Flask context
     loop = asyncio.get_event_loop()
     if loop.is_running():
-        response = asyncio.ensure_future(generate_output(message, session_id))
+        response_task = asyncio.ensure_future(generate_output(message, session_id, files=files))
+        return response_task.result()
     else:
-        response = loop.run_until_complete(generate_output(message, session_id))
-    
-    return response.result() if hasattr(response, 'result') else response
+        return loop.run_until_complete(generate_output(message, session_id, files=files))
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -111,39 +115,18 @@ def chat():
         session_id = request.form.get('sessionId', str(uuid.uuid4()))
         timestamp = request.form.get('timestamp', datetime.now().isoformat())
         user_name = request.form.get('userName', '')
-        
-        # Handle uploaded files
-        uploaded_files = []
-        for key in request.files:
-            if key.startswith('file_'):
-                file = request.files[key]
-                if file and file.filename and allowed_file(file.filename):
-                    filename = secure_filename(file.filename)
-                    # Add timestamp to avoid filename conflicts
-                    unique_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-                    file.save(file_path)
-                    
-                    uploaded_files.append({
-                        'name': filename,
-                        'path': file_path,
-                        'size': os.path.getsize(file_path),
-                        'type': file.content_type
-                    })
 
         # Check if a new session was created
         # If session_id is new, create a new session entry for this user
         if not db.sessions.find_one({"session_id": session_id}):
             # Check if session_id already exists
             exists = collection.find_one({"session_id": session_id}, {"_id": 1}) is not None
-            if exists: #do nothing
-                pass
-            else: # Append to user's sessionlist
+            if not exists:
                 user_collection.update_one(
                     {"username": user_name},
                     {"$addToSet": {"session_list": session_id}},
                     upsert=True
-            )
+                )
         
         #user message
         user_data = {
@@ -191,6 +174,55 @@ def chat():
             'details': str(e)
         }), 500
 
+@app.route('/api/documents/insert', methods=['POST'])
+def api_documents_insert():
+    """
+    Upload file(s) and insert up to MAX_DOCS_PER_INSERT into LightRAG.
+    Accepts multipart/form-data with one or more files; we look for keys starting with 'file'.
+    """
+    try:
+        incoming_files = []
+        for key in request.files:
+            if key.startswith('file'):
+                f = request.files[key]
+                if f and f.filename and allowed_file(f.filename):
+                    filename = secure_filename(f.filename)
+                    unique_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}"
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                    f.save(file_path)
+                    incoming_files.append({
+                        'name': filename,
+                        'path': file_path,
+                        'size': os.path.getsize(file_path),
+                        'type': f.content_type
+                    })
+
+        if not incoming_files:
+            return jsonify({'error': 'No valid files uploaded.'}), 400
+
+        # Run the async insertion
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            task = asyncio.ensure_future(insert_uploaded_files_to_rag(incoming_files, MAX_DOCS_PER_INSERT))
+            summary = task.result()
+        else:
+            summary = loop.run_until_complete(insert_uploaded_files_to_rag(incoming_files, MAX_DOCS_PER_INSERT))
+
+        return jsonify({'message': 'Insertion completed.', 'summary': summary}), 200
+
+    except Exception as e:
+        print(f"Error in /api/documents/insert: {str(e)}")
+        return jsonify({'error': 'Failed to insert documents', 'details': str(e)}), 500
+
+@app.route('/api/documents/list', methods=['GET'])
+def api_documents_list():
+    """
+    Return the contents of LightRAG's kv_store_doc_status.json.
+    """
+    content = read_kv_store_status(KV_STATUS_PATH)
+    status_code = 200 if 'error' not in content else 404 if content.get('error') == 'status_file_not_found' else 500
+    return jsonify(content), status_code
+
 @app.route('/api/sessions/<session_id>', methods=['GET'])
 def get_session(session_id):
     """Get chat session history"""
@@ -227,7 +259,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '1.0.0'
+        'max_docs_per_insert': MAX_DOCS_PER_INSERT
     })
 
 @app.route('/api/feedback', methods=['POST'])
@@ -237,9 +269,6 @@ def submit_feedback():
         object_id = data.get('object_id')
         feedback = data.get('feedback')
 
-        #print(object_id)
-
-        # Update the document
         result = collection.update_one(
             {'content': object_id},
             {'$set': {'feedback': feedback}}
@@ -273,4 +302,5 @@ if __name__ == '__main__':
     print("Starting GDPR Chatbot Backend Server...")
     print(f"Upload folder: {UPLOAD_FOLDER}")
     print(f"Allowed file extensions: {ALLOWED_EXTENSIONS}")
+    print(f"Max docs per insert to LightRAG: {MAX_DOCS_PER_INSERT}")
     app.run(host='134.60.71.197', port=8000)

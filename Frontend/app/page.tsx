@@ -17,6 +17,7 @@ import { SettingsModal } from "./components/settings-modal"
 import { ThemeProvider } from "./components/theme-provider"
 import { AuthModal } from "./components/auth-modal"
 import { GraphOverlay } from "../components/GraphOverlay"
+import { DocumentsModal } from "./components/documents-modal"
 
 // Backend URL for the chat API
 const BACKEND_URL = "http://134.60.71.197:8000";
@@ -62,6 +63,7 @@ export default function GDPRChatbot() {
 
   // State for GraphOverlay
   const [showGraph, setShowGraph] = useState(false)
+  const [showDocuments, setShowDocuments] = useState(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -428,6 +430,9 @@ export default function GDPRChatbot() {
                 <Button variant="outline" onClick={() => setShowGraph(true)}>
                   Graph
                 </Button>
+                <Button variant="outline" onClick={() => setShowDocuments(true)}>
+                  Documents
+                </Button>
                 <ProfileDropdown
                   username={username}
                   onProfileClick={() => setShowProfileModal(true)}
@@ -561,6 +566,8 @@ export default function GDPRChatbot() {
       </div>
       {/* Graph Overlay */}
       <GraphOverlay open={showGraph} onClose={() => setShowGraph(false)} />
+      {/* Documents Modal */}
+      <DocumentsModal open={showDocuments} onClose={() => setShowDocuments(false)} />
     </ThemeProvider>
   )
 }
