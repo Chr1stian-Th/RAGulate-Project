@@ -16,6 +16,7 @@ import { ProfileModal } from "./components/profile-modal"
 import { SettingsModal } from "./components/settings-modal"
 import { ThemeProvider } from "./components/theme-provider"
 import { AuthModal } from "./components/auth-modal"
+import { GraphOverlay } from "../components/GraphOverlay"
 
 // Backend URL for the chat API
 const BACKEND_URL = "http://134.60.71.197:8000";
@@ -58,6 +59,9 @@ export default function GDPRChatbot() {
 
   // Store sessions after login
   const [userSessions, setUserSessions] = useState<any[]>([])
+
+  // State for GraphOverlay
+  const [showGraph, setShowGraph] = useState(false)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -420,11 +424,16 @@ export default function GDPRChatbot() {
                   <p className="text-sm text-gray-600">Ask me anything about GDPR regulations and compliance</p>
                 </div>
               </div>
-              <ProfileDropdown
-                username={username}
-                onProfileClick={() => setShowProfileModal(true)}
-                onSettingsClick={() => setShowSettingsModal(true)}
-              />
+              <div className="flex items-center space-x-2">
+                <Button variant="outline" onClick={() => setShowGraph(true)}>
+                  Graph
+                </Button>
+                <ProfileDropdown
+                  username={username}
+                  onProfileClick={() => setShowProfileModal(true)}
+                  onSettingsClick={() => setShowSettingsModal(true)}
+                />
+              </div>
             </div>
           </div>
 
@@ -550,6 +559,8 @@ export default function GDPRChatbot() {
         {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} />}
         {showFileUpload && <FileUpload onFileSelect={handleFileSelect} onClose={() => setShowFileUpload(false)} />}
       </div>
+      {/* Graph Overlay */}
+      <GraphOverlay open={showGraph} onClose={() => setShowGraph(false)} />
     </ThemeProvider>
   )
 }

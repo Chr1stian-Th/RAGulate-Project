@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_cors import CORS
 import os
@@ -33,6 +33,7 @@ db = client["RAGulate"]
 collection = db["chatlogs"]
 # Collection for user management
 user_collection = db["usermanagement"]
+
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
@@ -251,6 +252,21 @@ def submit_feedback():
 
     except Exception as e:
         print(f"Error in /api/feedback: {str(e)}")
+        return jsonify({'error': 'An unexpected error occurred.'}), 500
+
+#GRAPHML_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Data', 'graph_chunk_entity_relation.graphml')
+GRAPHML_PATH = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data/graph_chunk_entity_relation.graphml"
+@app.route('/api/graph', methods=['GET'])
+def get_graphml():
+    #Send GraphML file as plain text for frontend parsing.
+    try:
+        with open(GRAPHML_PATH, 'r', encoding='utf-8') as f:
+            graphml_content = f.read()
+        return Response(graphml_content, mimetype='text/plain')
+    except FileNotFoundError:
+        return jsonify({'error': 'GraphML file not found.'}), 404
+    except Exception as e:
+        print(f"Error in /api/graph: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
 
 if __name__ == '__main__':
