@@ -20,7 +20,6 @@ import { AuthModal } from "./components/auth-modal"
 // Backend URL for the chat API
 const BACKEND_URL = "http://134.60.71.197:8000";
 
-
 interface Message {
   id: string
   role: "user" | "assistant"
@@ -53,9 +52,11 @@ export default function GDPRChatbot() {
   const [editedTitle, setEditedTitle] = useState<string>("")
   const [showAuthModal, setShowAuthModal] = useState(true)
 
+  // Persist username from AuthModal and pass via props to Profile components
+  const [username, setUsername] = useState<string>("")
+
   // Store sessions after login
   const [userSessions, setUserSessions] = useState<any[]>([])
-  // Username state will be managed by context
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -171,8 +172,8 @@ export default function GDPRChatbot() {
     }
   }
 
-// Check if a chat session has been created on initial load if not create a new one
-const hasCreatedChat = useRef(false);
+  // Check if a chat session has been created on initial load if not create a new one
+  const hasCreatedChat = useRef(false);
   useEffect(() => {
     if (!hasCreatedChat.current && chatSessions.length === 0) {
       createNewChat();
@@ -189,13 +190,10 @@ const hasCreatedChat = useRef(false);
     }
   }, [chatSessions, currentSessionId]);
 
-  // Handler for successful login
-  // Handler for successful login
-  const handleLoginSuccess = (sessions: any) => {
+  const handleLoginSuccess = (sessions: any, usernameFromAuth: string) => {
     setUserSessions(sessions)
+    setUsername(usernameFromAuth)
     setShowAuthModal(false)
-    // Optionally, load sessions into chatSessions here
-    // setChatSessions(sessions)
   }
 
   return (
@@ -322,6 +320,7 @@ const hasCreatedChat = useRef(false);
                 </div>
               </div>
               <ProfileDropdown
+                username={username}
                 onProfileClick={() => setShowProfileModal(true)}
                 onSettingsClick={() => setShowSettingsModal(true)}
               />
@@ -439,7 +438,13 @@ const hasCreatedChat = useRef(false);
           </div>
         </div>
 
-        {showProfileModal && <ProfileModal onClose={() => setShowProfileModal(false)} />}
+        {showProfileModal && (
+          <ProfileModal
+            username={username}
+            onSaveUsername={(newName) => setUsername(newName)}
+            onClose={() => setShowProfileModal(false)}
+          />
+        )}
 
         {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} />}
         {showFileUpload && <FileUpload onFileSelect={handleFileSelect} onClose={() => setShowFileUpload(false)} />}

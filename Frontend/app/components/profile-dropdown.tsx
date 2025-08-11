@@ -8,27 +8,15 @@ import { User, Settings, Moon, Sun, Monitor, ChevronDown } from "lucide-react"
 import { useTheme } from "./theme-provider"
 
 interface ProfileDropdownProps {
+  username: string
   onProfileClick: () => void
   onSettingsClick: () => void
 }
 
-export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDropdownProps) {
+export function ProfileDropdown({ username, onProfileClick, onSettingsClick }: ProfileDropdownProps) {
   const [isOpen, setIsOpen] = useState(false)
-  const [userProfile, setUserProfile] = useState({
-    name: "John Doe",
-    email: "john.doe@company.com",
-    avatar: "",
-  })
   const { theme, setTheme } = useTheme()
   const dropdownRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    // Load user profile from localStorage
-    const savedProfile = localStorage.getItem("userProfile")
-    if (savedProfile) {
-      setUserProfile(JSON.parse(savedProfile))
-    }
-  }, [])
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -36,7 +24,6 @@ export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDrop
         setIsOpen(false)
       }
     }
-
     document.addEventListener("mousedown", handleClickOutside)
     return () => {
       document.removeEventListener("mousedown", handleClickOutside)
@@ -71,9 +58,10 @@ export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDrop
         onClick={() => setIsOpen(!isOpen)}
       >
         <Avatar className="w-8 h-8">
-          <AvatarImage src={userProfile.avatar || "/placeholder.svg"} alt={userProfile.name} />
-          <AvatarFallback className="bg-blue-600 text-white text-sm">{getInitials(userProfile.name)}</AvatarFallback>
+          <AvatarImage src={"/placeholder.svg"} alt={username} />
+          <AvatarFallback className="bg-blue-600 text-white text-sm">{getInitials(username || "U")}</AvatarFallback>
         </Avatar>
+        <span className="text-sm">{username}</span>
         <ChevronDown className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`} />
       </Button>
 
@@ -84,12 +72,11 @@ export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDrop
             <div className="p-4 border-b border-gray-200 dark:border-gray-700">
               <div className="flex items-center space-x-3">
                 <Avatar className="w-10 h-10">
-                  <AvatarImage src={userProfile.avatar || "/placeholder.svg"} alt={userProfile.name} />
-                  <AvatarFallback className="bg-blue-600 text-white">{getInitials(userProfile.name)}</AvatarFallback>
+                  <AvatarImage src={"/placeholder.svg"} alt={username} />
+                  <AvatarFallback className="bg-blue-600 text-white">{getInitials(username || "U")}</AvatarFallback>
                 </Avatar>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{userProfile.name}</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{userProfile.email}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{username}</p>
                 </div>
               </div>
             </div>
@@ -142,7 +129,6 @@ export function ProfileDropdown({ onProfileClick, onSettingsClick }: ProfileDrop
                     <Moon className="w-3 h-3 mr-1" />
                     Dark
                   </Button>
-                  {/* Removed Auto button, but system remains default */}
                 </div>
               </div>
             </div>

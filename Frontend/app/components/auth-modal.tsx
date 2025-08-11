@@ -95,10 +95,13 @@ export function AuthModal({ onLoginSuccess }: AuthModalProps) {
         <div className="mt-4 text-center">
           {mode === "login" ? (
             <span>
-              Don't have an account?{' '}
+              Don't have an account?{" "}
               <button
                 className="text-blue-600 underline"
-                onClick={() => { setMode("register"); setError(null); }}
+                onClick={() => {
+                  setMode("register")
+                  setError(null)
+                }}
                 type="button"
               >
                 Register
@@ -106,10 +109,13 @@ export function AuthModal({ onLoginSuccess }: AuthModalProps) {
             </span>
           ) : (
             <span>
-              Already have an account?{' '}
+              Already have an account?{" "}
               <button
                 className="text-blue-600 underline"
-                onClick={() => { setMode("login"); setError(null); }}
+                onClick={() => {
+                  setMode("login")
+                  setError(null)
+                }}
                 type="button"
               >
                 Login

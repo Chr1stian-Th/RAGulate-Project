@@ -2,49 +2,38 @@
 
 import type React from "react"
 import { useState, useRef, useEffect } from "react"
-import { useUsername } from "../username-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Textarea } from "@/components/ui/textarea"
 import { X, Camera, Save, User } from "lucide-react"
 
 interface ProfileModalProps {
+  username: string
   onClose: () => void
+  onSaveUsername?: (newUsername: string) => void
 }
 
-interface UserProfile {
-  name: string
-  avatar: string
-}
-
-export function ProfileModal({ onClose }: ProfileModalProps) {
-  const { username, setUsername } = useUsername()
-  const [profile, setProfile] = useState<UserProfile>({
-    name: username,
-    avatar: "",
-  })
+export function ProfileModal({ username, onClose, onSaveUsername }: ProfileModalProps) {
+  const [name, setName] = useState<string>(username)
+  const [avatar, setAvatar] = useState<string>("")
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    setProfile((prev) => ({ ...prev, name: username }))
-    // Load profile from localStorage
-    const savedProfile = localStorage.getItem("userProfile")
-    if (savedProfile) {
-      setProfile((prev) => ({ ...prev, ...JSON.parse(savedProfile) }))
-    }
+    setName(username)
   }, [username])
 
   const handleSave = async () => {
     setIsSaving(true)
-    setUsername(profile.name)
-    localStorage.setItem("userProfile", JSON.stringify(profile))
-    setIsSaving(false)
-    setIsEditing(false)
+    try {
+      onSaveUsername?.(name)
+      setIsEditing(false)
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -52,23 +41,20 @@ export function ProfileModal({ onClose }: ProfileModalProps) {
     if (file) {
       const reader = new FileReader()
       reader.onload = (e) => {
-        setProfile((prev) => ({
-          ...prev,
-          avatar: e.target?.result as string,
-        }))
+        setAvatar(e.target?.result as string)
       }
       reader.readAsDataURL(file)
     }
   }
 
-  const getInitials = (name: string) => {
+  /*const getInitials = (name: string) => {
     return name
       .split(" ")
       .map((n) => n[0])
       .join("")
       .toUpperCase()
       .slice(0, 2)
-  }
+  }*/
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -88,8 +74,7 @@ export function ProfileModal({ onClose }: ProfileModalProps) {
           <div className="flex flex-col items-center space-y-4">
             <div className="relative">
               <Avatar className="w-24 h-24">
-                <AvatarImage src={profile.avatar || "/placeholder.svg"} alt={profile.name} />
-                <AvatarFallback className="bg-blue-600 text-white text-xl">{getInitials(profile.name)}</AvatarFallback>
+                <AvatarImage src={avatar || "/placeholder.svg"} alt={name} />
               </Avatar>
               {isEditing && (
                 <Button
@@ -109,8 +94,8 @@ export function ProfileModal({ onClose }: ProfileModalProps) {
             <Label htmlFor="name">Username</Label>
             <Input
               id="name"
-              value={profile.name}
-              onChange={(e) => setProfile((prev) => ({ ...prev, name: e.target.value }))}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
               disabled={!isEditing}
             />
           </div>
