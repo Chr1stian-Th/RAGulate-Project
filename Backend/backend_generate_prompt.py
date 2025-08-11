@@ -13,11 +13,9 @@ from pymongo import MongoClient
 nest_asyncio.apply()
 
 WORKING_DIR = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data"
+os.makedirs(WORKING_DIR, exist_ok=True)
 
-if not os.path.exists(WORKING_DIR):
-    os.mkdir(WORKING_DIR)
-
-# Configure Model and tokenizer etc
+# Configure Model and tokenizer
 hf_model_name = "mistralai/Mistral-7B-Instruct-v0.2"
 hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
 hf_model = AutoModelForCausalLM.from_pretrained(hf_model_name)
@@ -34,27 +32,31 @@ def _hf_generate(prompt: str) -> str:
         return_tensors="pt",
         truncation=True,
         max_length=512,
-        padding=True
+        padding=True,
     )
-
-    attention_mask = inputs["attention_mask"]
 
     with torch.no_grad():
         outputs = hf_model.generate(
-            inputs.input_ids,
-            attention_mask=attention_mask,
+            **inputs,
             max_new_tokens=512,
             pad_token_id=hf_tokenizer.pad_token_id,
-            eos_token_id=hf_tokenizer.eos_token_id
+            eos_token_id=hf_tokenizer.eos_token_id,
+            return_dict_in_generate=True,
         )
-    return hf_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    input_len = inputs.input_ids.shape[1]
+    generated_only = outputs.sequences[0, input_len:]
+    return hf_tokenizer.decode(generated_only, skip_special_tokens=True).strip()
 
 async def hf_model_complete(prompt: str, **kwargs) -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _hf_generate, prompt)
 
-# Initialize LightRAG once
-async def initialize_rag():
+_rag_instance = None
+_rag_lock = asyncio.Lock()
+
+# Initialize LightRAG
+async def initialize_rag() -> LightRAG:
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=hf_model_complete,
@@ -78,86 +80,59 @@ async def initialize_rag():
     print("Finished Initializing!")
     return rag
 
-# Cache RAG instance across calls // TODO IF Performance is bad, resulted in issues earlier
-#_rag_instance = None
+async def get_rag() -> LightRAG:
+    global _rag_instance
+    if _rag_instance is None:
+        async with _rag_lock:
+            if _rag_instance is None:
+                _rag_instance = await initialize_rag()
+    return _rag_instance
 
-#async def get_rag():
-#    global _rag_instance
-#    if _rag_instance is None:
-#        _rag_instance = await initialize_rag()
-#    return _rag_instance
-
-# Process Query - used in backend_api.py
-#async def query_rag(prompt: str) -> str:
-    #rag = await get_rag()
-    #rag = asyncio.run(initialize_rag())
-    #return rag.query(prompt, param=QueryParam(mode="naive"))
-
-#Test call of function
-#async def main():
-    #await query_rag("Was ist Artikel 5 der DSGVO?")
-
-#asyncio.run(main())
-
-# Connect to MongoDB
+# MongoDB
 client = MongoClient("mongodb://localhost:27017/")
-
-# Select database and collection
-db = client["RAGulate"]  
+db = client["RAGulate"]
 collection = db["chatlogs"]
 
-#limit for cutoff
-limit = 3
+limit = 3 * 2  # number of history messages to keep at maximum
 
-#Get last *limit entries in mongoDB sorted by timestamp
-def get_last_conversations(collection):
-    entries = list(
-        collection.find().sort("timestamp", 1)
-    )
-    return entries
+def get_last_conversations(collection, session_id: str):
+    # Ascending by timestamp; last element is most recent
+    return list(collection.find({"session_id": session_id}).sort("timestamp", 1))
 
-# Function to format into correct Format from JSON
 def format_conversation(entries):
     conv_history = []
-    for entry in entries:
+    # exclude the very last entry
+    for entry in entries[:-1]:
         conv_history.append({
-            "role": entry.get("role", "user"),      # fallback to "user" if missing
-            "content": entry.get("content", "")
+            "role": entry.get("role", "user"),
+            "content": entry.get("content", ""),
         })
-    conv_history = conv_history[-limit:]
-    return conv_history
+    # keep only the last `limit` messages
+    return conv_history[-limit:]
 
-# Perform naive search, return the output
-async def generate_output(input: str):
-    #print(input)
-    rag = asyncio.run(initialize_rag())
+# Returns output and requires: input-chatmessage, session_id
+async def generate_output(input: str, session_id: str) -> str:
+    rag = await get_rag()
 
-    # Get last *limit* conversation entries from mongoDB
-    raw_entries = get_last_conversations(collection)
-    #Format into conv_history format
-    conv_history = format_conversation(raw_entries) #Format:[{"role": "user/assistant", "content": "message"}]
-    print(conv_history)
+    # disabled chat history because of performance
+    '''# Pull conversation history
+    raw_entries = get_last_conversations(collection, session_id)
+    conv_history = format_conversation(raw_entries)
 
-    #Set Parameters of query
-    query_param_settings = QueryParam(
-        mode="naive",
-    #)
-        conversation_history=conv_history,
-        history_turns = 1)
+    history_length = len(conv_history)
+    print("Length of history:", history_length)
 
-    result = rag.query(input, param=query_param_settings)
-    #result = rag.query(input, param=QueryParam(mode="naive"))
+    if history_length == 0:
+        param = QueryParam(mode="naive")
+    else:
+        history_turns = min((history_length // 2), 3)  # Increment by 1 for every 2 messages, max 3
+        param = QueryParam(
+            mode="naive",
+            conversation_history=conv_history,
+            history_turns=history_turns,
+        )'''
+    param = QueryParam(mode="naive")
 
-    #Split the String to remove the prompt
-    # Split at the INST markers
-    parts = result.split("[/INST]", 1)
-    string1 = parts[0].replace("[INST]", "").strip()
-    string2 = parts[1].strip()
-    print(string1)
-    print(string2)
-    return string2
-    
-    
-
-#if __name__ == "__main__":
-    #generate_output("Was ist Artikel 5 der DSGVO?")
+    result = rag.query(input, param=param)
+    print(result)
+    return result

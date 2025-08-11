@@ -26,6 +26,7 @@ interface Message {
   content: string
   timestamp: Date
   files?: File[]
+  userName?: string
 }
 
 interface ChatSession {
@@ -96,6 +97,7 @@ export default function GDPRChatbot() {
       content: input,
       timestamp: new Date(),
       files: uploadedFiles.length > 0 ? [...uploadedFiles] : undefined,
+      userName: username
     }
 
     setMessages((prev) => [...prev, userMessage])
@@ -105,9 +107,14 @@ export default function GDPRChatbot() {
     try {
       const formData = new FormData()
       formData.append("message", input)
-      // Always use the sessionID from the current session object
       const currentSession = chatSessions.find(s => s.id === currentSessionId)
       formData.append("sessionId", currentSession?.sessionID || "")
+      
+      // Ensure username is properly set from state
+      if (!username) {
+        console.warn("Username not found in current session");
+      }
+      formData.append("userName", username)
 
       uploadedFiles.forEach((file, index) => {
         formData.append(`file_${index}`, file)
@@ -190,11 +197,105 @@ export default function GDPRChatbot() {
     }
   }, [chatSessions, currentSessionId]);
 
-  const handleLoginSuccess = (sessions: any, usernameFromAuth: string) => {
-    setUserSessions(sessions)
-    setUsername(usernameFromAuth)
-    setShowAuthModal(false)
+  // Add useEffect to load sessions on page load if user is logged in
+  useEffect(() => {
+    const loadInitialSessions = async () => {
+      if (username) {
+        const userSessions = await fetchSessions(username);
+        if (userSessions.sessions.length > 0) {
+          const sessionsWithDetails = await Promise.all(
+            userSessions.sessions.map(async (sessionId: string) => {
+              const details = await fetchSessionDetails(sessionId);
+              console.log("Session details for", sessionId, ":", details);
+              return {
+                id: sessionId,
+                title: "GDPR Consultation", // Default title #TODO: not default name handling
+                messages: details ? details.map(transformMessage) : [],
+                createdAt: new Date(),
+                sessionID: sessionId
+              };
+            })
+          );
+          
+          setChatSessions(sessionsWithDetails);
+          
+          // Set the most recent session as current
+          if (sessionsWithDetails.length > 0) {
+            var lastIndex = sessionsWithDetails.length - 1;
+            setCurrentSessionId(sessionsWithDetails[lastIndex].id);
+            setMessages(sessionsWithDetails[lastIndex].messages || []);
+          }
+        }
+      }
+    };
+
+    loadInitialSessions();
+  }, [username]);
+
+  const fetchSessions = async (username: string) => {
+    try {
+      const url = `${BACKEND_URL}/api/sessions?username=${encodeURIComponent(username)}`;
+      console.log('Fetching sessions from:', url);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Failed to fetch sessions');
+      const sessions = await response.json();
+      return sessions;
+    } catch (error) {
+      console.error('Error fetching sessions:', error);
+      return [];
+    }
+  };
+
+  const fetchSessionDetails = async (sessionId: string) => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}`);
+      if (!response.ok) throw new Error('Failed to fetch session details');
+      const sessionDetails = await response.json();
+      return sessionDetails;
+    } catch (error) {
+      console.error('Error fetching session details:', error);
+      return null;
+    }
+  };
+
+  const handleLoginSuccess = async (sessions: any, usernameFromAuth: string) => {
+    setUsername(usernameFromAuth);
+    setShowAuthModal(false);
+    
+    const userSessions = await fetchSessions(usernameFromAuth);
+    if (userSessions.sessions.length > 0) {
+      const sessionsWithDetails = await Promise.all(
+        userSessions.sessions.map(async (sessionId: string) => {
+          const details = await fetchSessionDetails(sessionId);
+          return {
+            id: sessionId,
+            title: "GDPR Consultation",
+            messages: details ? details.map(transformMessage) : [],
+            createdAt: new Date(),
+            sessionID: sessionId
+          };
+        })
+      );
+      
+      setChatSessions(sessionsWithDetails);
+      
+      if (sessionsWithDetails.length > 0) {
+        setCurrentSessionId(sessionsWithDetails[0].id);
+        setMessages(sessionsWithDetails[0].messages || []);
+      }
+    }
   }
+
+  const transformMessage = (msg: any): Message => {
+    return {
+      id: msg._id || Date.now().toString(),
+      role: msg.role as "user" | "assistant",
+      content: msg.content,
+      timestamp: new Date(msg.timestamp),
+      files: msg.files || [],
+      userName: msg.user_name
+    };
+  };
 
   return (
     <ThemeProvider>
