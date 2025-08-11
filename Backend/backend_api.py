@@ -98,14 +98,14 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def generate_gdpr_response(message, session_id, files=None):
+def generate_gdpr_response(message, session_id):
     # Run async RAG query in sync Flask context
     loop = asyncio.get_event_loop()
     if loop.is_running():
-        response_task = asyncio.ensure_future(generate_output(message, session_id, files=files))
+        response_task = asyncio.ensure_future(generate_output(message, session_id))
         return response_task.result()
     else:
-        return loop.run_until_complete(generate_output(message, session_id, files=files))
+        return loop.run_until_complete(generate_output(message, session_id))
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -133,7 +133,6 @@ def chat():
             'role': 'user',
             'content': message,
             'timestamp': timestamp,
-            'files': uploaded_files,
             'session_id': session_id,
             'user_name': user_name
         }
@@ -144,7 +143,7 @@ def chat():
         print("Inserted Doc ID:", result_user.inserted_id)
         
         # Generate LLM response
-        ai_response = generate_gdpr_response(message, session_id, uploaded_files)
+        ai_response = generate_gdpr_response(message, session_id)
         
         # Add LLM response to database
         assistant_message = {
@@ -164,7 +163,6 @@ def chat():
             'answer': ai_response,
             'sessionId': session_id,
             'timestamp': datetime.now().isoformat(),
-            'filesProcessed': len(uploaded_files)
         })
         
     except Exception as e:

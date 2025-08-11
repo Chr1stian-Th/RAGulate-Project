@@ -8,9 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Card } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Paperclip, Send, MessageSquare, Shield, X } from "lucide-react"
+import { Send, MessageSquare, Shield, X } from "lucide-react"
 import { ChatMessage } from "./components/chat-message"
-import { FileUpload } from "./components/file-upload"
 import { ProfileDropdown } from "./components/profile-dropdown"
 import { ProfileModal } from "./components/profile-modal"
 import { SettingsModal } from "./components/settings-modal"
@@ -27,7 +26,6 @@ interface Message {
   role: "user" | "assistant"
   content: string
   timestamp: Date
-  files?: File[]
   userName?: string
 }
 
@@ -45,10 +43,7 @@ export default function GDPRChatbot() {
   const [isLoading, setIsLoading] = useState(false)
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null)
-  const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
-  const [showFileUpload, setShowFileUpload] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const [showProfileModal, setShowProfileModal] = useState(false)
   const [showSettingsModal, setShowSettingsModal] = useState(false)
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
@@ -90,19 +85,17 @@ export default function GDPRChatbot() {
     setChatSessions((prev) => [newSession, ...prev])
     setCurrentSessionId(newSession.id)
     setMessages([])
-    setUploadedFiles([])
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() && uploadedFiles.length === 0) return
+    if (!input.trim()) return
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
       content: input,
       timestamp: new Date(),
-      files: uploadedFiles.length > 0 ? [...uploadedFiles] : undefined,
       userName: username
     }
 
@@ -111,24 +104,18 @@ export default function GDPRChatbot() {
     setIsLoading(true)
 
     try {
-      const formData = new FormData()
-      formData.append("message", input)
       const currentSession = chatSessions.find(s => s.id === currentSessionId)
-      formData.append("sessionId", currentSession?.sessionID || "")
       
-      // Ensure username is properly set from state
-      if (!username) {
-        console.warn("Username not found in current session");
-      }
-      formData.append("userName", username)
-
-      uploadedFiles.forEach((file, index) => {
-        formData.append(`file_${index}`, file)
-      })
-
       const response = await fetch(BACKEND_URL + "/api/chat", {
         method: "POST",
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: input,
+          sessionId: currentSession?.sessionID || "",
+          userName: username
+        }),
       })
 
       if (!response.ok) {
@@ -145,8 +132,6 @@ export default function GDPRChatbot() {
       }
 
       setMessages((prev) => [...prev, assistantMessage])
-      setUploadedFiles([])
-      setShowFileUpload(false)
     } catch (error) {
       console.error("Error sending message:", error)
       const errorMessage: Message = {
@@ -161,13 +146,7 @@ export default function GDPRChatbot() {
     }
   }
 
-  const handleFileSelect = (files: File[]) => {
-    setUploadedFiles((prev) => [...prev, ...files])
-  }
 
-  const removeFile = (index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index))
-  }
 
   const deleteChatSession = (sessionId: string) => {
     setChatSessions((prev) => prev.filter((session) => session.id !== sessionId))
@@ -298,7 +277,6 @@ export default function GDPRChatbot() {
       role: msg.role as "user" | "assistant",
       content: msg.content,
       timestamp: new Date(msg.timestamp),
-      files: msg.files || [],
       userName: msg.user_name
     };
   };
@@ -480,27 +458,7 @@ export default function GDPRChatbot() {
             </div>
           </ScrollArea>
 
-          {/* File Upload Area */}
-          {uploadedFiles.length > 0 && (
-            <div className="border-t border-gray-200 p-4">
-              <div className="max-w-4xl mx-auto">
-                <div className="flex flex-wrap gap-2">
-                  {uploadedFiles.map((file, index) => (
-                    <div
-                      key={index}
-                      className="flex items-center space-x-2 bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-sm"
-                    >
-                      <Paperclip className="w-3 h-3" />
-                      <span>{file.name}</span>
-                      <button onClick={() => removeFile(index)} className="hover:bg-blue-200 rounded-full p-0.5">
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
+
 
           {/* Input Area */}
           <div className="border-t border-gray-200 p-4">
@@ -514,33 +472,10 @@ export default function GDPRChatbot() {
                     className="pr-12 min-h-[44px] resize-none"
                     disabled={isLoading}
                   />
-                  <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex space-x-1">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files) {
-                          handleFileSelect(Array.from(e.target.files))
-                        }
-                      }}
-                      accept=".pdf,.doc,.docx,.txt,.csv,.xlsx"
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="h-8 w-8 p-0"
-                    >
-                      <Paperclip className="w-4 h-4" />
-                    </Button>
-                  </div>
                 </div>
                 <Button
                   type="submit"
-                  disabled={isLoading || (!input.trim() && uploadedFiles.length === 0)}
+                  disabled={isLoading || !input.trim()}
                   className="bg-blue-600 hover:bg-blue-700"
                 >
                   <Send className="w-4 h-4" />
@@ -562,7 +497,7 @@ export default function GDPRChatbot() {
         )}
 
         {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} />}
-        {showFileUpload && <FileUpload onFileSelect={handleFileSelect} onClose={() => setShowFileUpload(false)} />}
+
       </div>
       {/* Graph Overlay */}
       <GraphOverlay open={showGraph} onClose={() => setShowGraph(false)} />
