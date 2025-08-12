@@ -8,7 +8,10 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "GDPR Compliance Assistant",
   description: "AI-powered chatbot for GDPR compliance and data protection guidance",
-    generator: 'v0.dev'
+  generator: 'v0.dev',
+  icons: {
+    icon: '/icon.png',
+  }
 }
 
 export default function RootLayout({
