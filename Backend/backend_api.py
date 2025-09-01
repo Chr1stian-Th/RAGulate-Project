@@ -218,8 +218,38 @@ def api_documents_list():
     Return the contents of LightRAG's kv_store_doc_status.json.
     """
     content = read_kv_store_status(KV_STATUS_PATH)
-    status_code = 200 if 'error' not in content else 404 if content.get('error') == 'status_file_not_found' else 500
-    return jsonify(content), status_code
+    # Handle read errors directly
+    if isinstance(content, dict) and 'error' in content:
+        status_code = 404 if content.get('error') == 'status_file_not_found' else 500
+        return jsonify(content), status_code
+
+    # Transform: omit large 'content' field and sort by 'updated_at'
+    try:
+        items = []
+        if isinstance(content, dict):
+            for doc_id, meta in content.items():
+                if isinstance(meta, dict):
+                    filtered = {k: v for k, v in meta.items() if k != 'content'}
+                    filtered['doc_id'] = doc_id
+                    items.append(filtered)
+
+        def parse_updated_at(entry):
+            ts = entry.get('updated_at')
+            if isinstance(ts, str):
+                try:
+                    # Support both Z and offset ISO strings
+                    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                except Exception:
+                    pass
+            # Put entries with missing/invalid timestamp at the beginning of the list when sorting descending by returning minimal time
+            return datetime.min
+
+        # Sort by updated_at descending (newest first)
+        items.sort(key=parse_updated_at, reverse=True)
+        return jsonify({'documents': items}), 200
+    except Exception as e:
+        print(f"Error transforming kv store status: {e}")
+        return jsonify({'error': 'status_transform_error', 'details': str(e)}), 500
 
 @app.route('/api/sessions/<session_id>', methods=['GET'])
 def get_session(session_id):

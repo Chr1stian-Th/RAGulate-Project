@@ -47,9 +47,10 @@ export function DocumentsModal({ open, onClose }: DocumentsModalProps) {
     try {
       const res = await fetch(`${API_BASE}/api/documents/list`)
       if (!res.ok) throw new Error("Failed to fetch documents")
-      const data = (await res.json()) as Record<string, any>
-      const arr: Document[] = Object.entries(data).map(([id, doc]) => ({
-        _id: id,
+      const data = (await res.json()) as { documents?: any[] }
+      const docs = Array.isArray(data.documents) ? data.documents : []
+      const arr: Document[] = docs.map((doc) => ({
+        _id: String(doc?.doc_id ?? ""),
         content_summary: doc?.content_summary ?? "",
         status: String(doc?.status ?? "unknown"),
         content_length: Number(doc?.content_length ?? 0),
