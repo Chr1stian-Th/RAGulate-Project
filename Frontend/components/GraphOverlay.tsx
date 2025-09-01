@@ -5,7 +5,8 @@ import dynamic from "next/dynamic"
 import { Button } from "@/components/ui/button"
 import { graphMLtoForceData } from "@/utils/graphml"
 import { useTheme } from "next-themes"
-import 'aframe';
+// Note: A-Frame is not needed for ForceGraph2D and breaks SSR.
+// Removing the import avoids 'document is not defined' on the server.
 
 const BACKEND_URL = "http://134.60.71.197:8000";
 
@@ -19,14 +20,21 @@ export function GraphOverlay({ open, onClose }: { open: boolean; onClose: () => 
   const [data, setData] = useState<{nodes:any[];links:any[]}>({ nodes: [], links: [] })
   const [linkColor, setLinkColor] = useState('#000000')
   const [selectedNode, setSelectedNode] = useState<any | null>(null)
-  const [dimensions, setDimensions] = useState({
-    width: window.innerWidth * 0.95,
-    height: window.innerHeight * 0.85
-  });
+  const [mounted, setMounted] = useState(false)
+  const [dimensions, setDimensions] = useState(() => ({
+    // Guard against SSR by checking window existence
+    width: typeof window !== 'undefined' ? window.innerWidth * 0.95 : 800,
+    height: typeof window !== 'undefined' ? window.innerHeight * 0.85 : 600
+  }));
 
   useEffect(() => {
     setLinkColor(resolvedTheme === 'dark' ? '#ffffff' : '#000000')
   }, [resolvedTheme]);
+
+  // Ensure client-only rendering to avoid any SSR pitfalls
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   useEffect(() => {
     const handleResize = () => {
@@ -74,18 +82,20 @@ export function GraphOverlay({ open, onClose }: { open: boolean; onClose: () => 
         )}
 
         <div className="h-[calc(100%-56px)]">
-          <ForceGraph2D
-            graphData={data}
-            nodeLabel="name"
-            linkDirectionalParticles={1}
-            linkDirectionalParticleSpeed={0.005}
-            width={dimensions.width}
-            height={dimensions.height}
-            linkColor={linkColor}
-            linkDirectionalParticleColor={linkColor}
-            onNodeClick={(node: any) => setSelectedNode(node)}
-            onBackgroundClick={() => setSelectedNode(null)}
-          />
+          {mounted && (
+            <ForceGraph2D
+              graphData={data}
+              nodeLabel="name"
+              linkDirectionalParticles={1}
+              linkDirectionalParticleSpeed={0.005}
+              width={dimensions.width}
+              height={dimensions.height}
+              linkColor={linkColor}
+              linkDirectionalParticleColor={linkColor}
+              onNodeClick={(node: any) => setSelectedNode(node)}
+              onBackgroundClick={() => setSelectedNode(null)}
+            />
+          )}
         </div>
       </div>
     </div>
