@@ -111,10 +111,11 @@ def generate_gdpr_response(message, session_id):
 def chat():
     try:
         # Get form data
-        message = request.form.get('message', '')
-        session_id = request.form.get('sessionId', str(uuid.uuid4()))
-        timestamp = request.form.get('timestamp', datetime.now().isoformat())
-        user_name = request.form.get('userName', '')
+        data = request.get_json(force=True)  # parses JSON body
+        message = data.get('message', '')
+        session_id = data.get('sessionId', str(uuid.uuid4()))
+        timestamp = data.get('timestamp', datetime.now().isoformat())
+        user_name = data.get('userName', '')
 
         # Check if a new session was created
         # If session_id is new, create a new session entry for this user
@@ -325,6 +326,94 @@ def get_graphml():
     except Exception as e:
         print(f"Error in /api/graph: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
+    
+DEFAULT_OPTIONS = {
+    "chatHistory": False,
+    "language": "en",        # allowed: en, es, fr, de
+    "timeout": 30,           # seconds
+    "customPrompt": ""       # free text
+}
+
+_ALLOWED_LANGS = {"en", "es", "fr", "de"}
+_TIMEOUT_MIN = 5
+_TIMEOUT_MAX = 300
+
+def _normalize_options(opts: dict) -> dict:
+    """Return a sanitized options dict merged with defaults."""
+    if not isinstance(opts, dict):
+        opts = {}
+
+    chat_history = opts.get("chatHistory", DEFAULT_OPTIONS["chatHistory"])
+    chat_history = bool(chat_history)
+
+    language = opts.get("language", DEFAULT_OPTIONS["language"])
+    language = language if language in _ALLOWED_LANGS else DEFAULT_OPTIONS["language"]
+
+    timeout = opts.get("timeout", DEFAULT_OPTIONS["timeout"])
+    try:
+        timeout = int(timeout)
+    except Exception:
+        timeout = DEFAULT_OPTIONS["timeout"]
+    timeout = max(_TIMEOUT_MIN, min(_TIME_MAX, timeout)) if ( _TIME_MAX := _TIMEOUT_MAX ) else timeout  # keep clamp explicit
+    # (Expanded for clarity; clamp to [5, 300])
+    timeout = max(_TIMEOUT_MIN, min(_TIMEOUT_MAX, timeout))
+
+    custom_prompt = opts.get("customPrompt", DEFAULT_OPTIONS["customPrompt"])
+    if not isinstance(custom_prompt, str):
+        custom_prompt = DEFAULT_OPTIONS["customPrompt"]
+
+    return {
+        "chatHistory": chat_history,
+        "language": language,
+        "timeout": timeout,
+        "customPrompt": custom_prompt,
+    }
+
+@app.route('/getOptions', methods=['GET'])
+def get_options():
+    """
+    Returns the user's options. If user or options are missing,
+    returns DEFAULT_OPTIONS. Query param: ?username=alice
+    """
+    username = request.args.get('username', '').strip()
+    if not username:
+        return jsonify({"error": "username query parameter is required"}), 400
+
+    user = user_collection.find_one({"username": username}, {"_id": 0, "options": 1})
+    if not user or "options" not in user:
+        # No stored options → return defaults
+        return jsonify(DEFAULT_OPTIONS), 200
+
+    return jsonify(_normalize_options(user["options"])), 200
+
+@app.route('/setOptions', methods=['POST'])
+def set_options():
+    """
+    Stores the user's options document under user.options.
+    Body: { "username": "alice", "options": { chatHistory, language, timeout, customPrompt } }
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        username = (data.get("username") or "").strip()
+        options_in = data.get("options", {})
+
+        if not username:
+            return jsonify({"error": "username is required"}), 400
+
+        # Normalize / validate and then persist
+        options_clean = _normalize_options(options_in)
+
+        # Ensure the user record exists (upsert) and set options
+        user_collection.update_one(
+            {"username": username},
+            {"$set": {"options": options_clean}},
+            upsert=True
+        )
+
+        return jsonify({"message": "Options saved.", "options": options_clean}), 200
+    except Exception as e:
+        print(f"Error in /setOptions: {e}")
+        return jsonify({"error": "failed_to_set_options", "details": str(e)}), 500
 
 if __name__ == '__main__':
     print("Starting GDPR Chatbot Backend Server...")
