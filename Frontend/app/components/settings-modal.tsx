@@ -122,7 +122,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
           <div className="space-y-3">
             <h3 className="text-lg font-semibold">Chat History</h3>
             <div className="flex items-center justify-between">
-              <Label htmlFor="chat-history">Save Chat History</Label>
+              <Label htmlFor="chat-history">Use chat history for answers (expect waiting longer if enabled)</Label>
               <Switch
                 id="chat-history"
                 checked={settings.chatHistory}

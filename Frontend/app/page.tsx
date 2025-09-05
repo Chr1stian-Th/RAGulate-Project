@@ -496,7 +496,7 @@ export default function GDPRChatbot() {
           />
         )}
 
-        {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} username={""} />}
+        {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} username={username} />}
 
       </div>
       {/* Graph Overlay */}
