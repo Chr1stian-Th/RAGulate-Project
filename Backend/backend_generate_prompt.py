@@ -92,11 +92,15 @@ db = client["RAGulate"]
 collection = db["chatlogs"]
 user_collection = db["usermanagement"]
 
+# Allowed query modes (must match frontend)
+_ALLOWED_QUERY_MODES = {"local", "global", "hybrid", "naive", "mix"}
+
 # Options & helpers
 DEFAULT_OPTIONS = {
     "chatHistory": True,
-    "timeout": 30,        # seconds
+    "timeout": 180,        # seconds
     "customPrompt": "",   # free text
+    "queryMode": "naive", # default retrieval mode
 }
 
 _HISTORY_LIMIT = 3 * 2  # number of history messages to keep at maximum
@@ -121,33 +125,60 @@ def _find_username_by_session(session_id: str) -> str | None:
     return doc.get("username") if doc else None
 
 def _get_user_options(username: str | None) -> dict:
+    """
+    Load user options from DB, applying validation/sanitization and
+    falling back to DEFAULT_OPTIONS where necessary.
+    Ensures queryMode defaults to 'naive' if missing/invalid.
+    """
+    out = dict(DEFAULT_OPTIONS)
     if not username:
-        return dict(DEFAULT_OPTIONS)
+        return out
+
     doc = user_collection.find_one(
         {"username": username},
         {"_id": 0, "options": 1}
     )
     opts = (doc or {}).get("options") or {}
-    out = dict(DEFAULT_OPTIONS)
+
+    # chatHistory
     if isinstance(opts.get("chatHistory"), bool):
         out["chatHistory"] = opts["chatHistory"]
+
+    # timeout (bounded int)
     try:
         if isinstance(opts.get("timeout"), (int, float)):
             t = int(opts["timeout"])
             out["timeout"] = max(5, min(300, t))
     except Exception:
         pass
+
+    # customPrompt
     if isinstance(opts.get("customPrompt"), str):
         out["customPrompt"] = opts["customPrompt"]
+
+    # queryMode with validation
+    qmode = opts.get("queryMode")
+    if isinstance(qmode, str) and qmode in _ALLOWED_QUERY_MODES:
+        out["queryMode"] = qmode
+    else:
+        out["queryMode"] = "naive"  # hard default if missing/invalid
+
     return out
 
-def _build_queryparam(chat_history_enabled: bool, custom_prompt: str, session_id: str):
-    qp = QueryParam(mode="naive")
+def _build_queryparam(chat_history_enabled: bool, custom_prompt: str, session_id: str, query_mode: str):
+    """
+    Build QueryParam, setting the LightRAG mode from validated query_mode.
+    """
+    # Safety: ensure we only pass allowed modes; fall back to 'naive'
+    mode = query_mode if query_mode in _ALLOWED_QUERY_MODES else "naive"
+    qp = QueryParam(mode=mode)
+
     if custom_prompt:
         try:
             qp.user_prompt = custom_prompt.strip()
         except Exception:
             pass
+
     return qp
 
 async def _rag_query_with_timeout(rag: LightRAG, query: str, param: QueryParam, timeout_s: int) -> str:
@@ -166,8 +197,9 @@ async def generate_output(input: str, session_id: str) -> str:
     chat_history_enabled = options["chatHistory"]
     timeout_s = options["timeout"]
     custom_prompt = options["customPrompt"]
+    query_mode = options.get("queryMode", "naive")  # extra guard
 
-    param = _build_queryparam(chat_history_enabled, custom_prompt, session_id)
+    param = _build_queryparam(chat_history_enabled, custom_prompt, session_id, query_mode)
 
     if chat_history_enabled:
         raw_entries = get_last_conversations(collection, session_id)

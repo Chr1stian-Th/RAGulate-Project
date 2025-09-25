@@ -390,7 +390,7 @@ def get_options():
 def set_options():
     """
     Stores the user's options document under user.options.
-    Body: { "username": "alice", "options": { chatHistory, language, timeout, customPrompt } }
+    Body: { "username": "alice", "options": { chatHistory, language, timeout, queryMode, customPrompt } }
     """
     try:
         data = request.get_json(force=True) or {}
