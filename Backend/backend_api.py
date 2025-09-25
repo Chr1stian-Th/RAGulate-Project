@@ -338,6 +338,8 @@ _ALLOWED_LANGS = {"en", "es", "fr", "de"}
 _TIMEOUT_MIN = 5
 _TIMEOUT_MAX = 300
 
+_ALLOWED_MODES = {"local", "global", "hybrid", "naive", "mix"}
+
 def _normalize_options(opts: dict) -> dict:
     """Return a sanitized options dict merged with defaults."""
     if not isinstance(opts, dict):
@@ -348,6 +350,9 @@ def _normalize_options(opts: dict) -> dict:
 
     language = opts.get("language", DEFAULT_OPTIONS["language"])
     language = language if language in _ALLOWED_LANGS else DEFAULT_OPTIONS["language"]
+
+    queryMode = opts.get("queryMode", DEFAULT_OPTIONS.get("queryMode", "naive"))
+    queryMode = queryMode if queryMode in _ALLOWED_MODES else DEFAULT_OPTIONS.get("queryMode", "naive")
 
     timeout = opts.get("timeout", DEFAULT_OPTIONS["timeout"])
     try:
@@ -365,6 +370,7 @@ def _normalize_options(opts: dict) -> dict:
     return {
         "chatHistory": chat_history,
         "language": language,
+        "queryMode": queryMode,
         "timeout": timeout,
         "customPrompt": custom_prompt,
     }
