@@ -23,7 +23,7 @@ MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
 MAX_DOCS_PER_INSERT = int(os.getenv('RAG_MAX_DOCS_PER_INSERT', '1'))
 
 # Path for LightRAG's kv store status
-KV_STATUS_PATH = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data/kv_store_doc_status.json"
+KV_STATUS_PATH = "/home/dbis-ai/Desktop/ChristiansWorkspace/RAGulate-Project/Data/kv_store_doc_status.json"
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
@@ -119,7 +119,7 @@ def chat():
 
         # Check if a new session was created
         # If session_id is new, create a new session entry for this user
-        if not db.sessions.find_one({"session_id": session_id}):
+        if not user_collection.find_one({"username": user_name, "session_list": session_id}):
             # Check if session_id already exists
             exists = collection.find_one({"session_id": session_id}, {"_id": 1}) is not None
             if not exists:
@@ -313,7 +313,7 @@ def submit_feedback():
         return jsonify({'error': 'An unexpected error occurred.'}), 500
 
 #GRAPHML_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Data', 'graph_chunk_entity_relation.graphml')
-GRAPHML_PATH = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data/graph_chunk_entity_relation.graphml"
+GRAPHML_PATH = "/home/dbis-ai/Desktop/ChristiansWorkspace/RAGulate-Project/Data/graph_chunk_entity_relation.graphml"
 @app.route('/api/graph', methods=['GET'])
 def get_graphml():
     #Send GraphML file as plain text for frontend parsing.
@@ -367,12 +367,16 @@ def _normalize_options(opts: dict) -> dict:
     if not isinstance(custom_prompt, str):
         custom_prompt = DEFAULT_OPTIONS["customPrompt"]
 
+    llm_provider = opts.get("llmProvider", "hf")
+    llm_provider = llm_provider if llm_provider in {"hf", "openrouter"} else "hf"
+    
     return {
         "chatHistory": chat_history,
         "language": language,
         "queryMode": queryMode,
         "timeout": timeout,
         "customPrompt": custom_prompt,
+        "llmProvider": llm_provider,
     }
 
 @app.route('/getOptions', methods=['GET'])

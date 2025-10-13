@@ -17,7 +17,7 @@ WORKING_DIR = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
-hf_model_name = "mistralai/Mistral-7B-Instruct-v0.2"
+hf_model_name = "mistralai/Mistral-7B-Instruct-v0.3"
 hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
 hf_model = AutoModelForCausalLM.from_pretrained(hf_model_name)
 

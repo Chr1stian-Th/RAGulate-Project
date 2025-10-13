@@ -26,6 +26,7 @@ interface AppSettings {
   timeout: number
   customPrompt: string
   queryMode: QueryMode
+  llmProvider: string
 }
 
 type ToastState = {
@@ -41,6 +42,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
     timeout: 180,
     customPrompt: "",
     queryMode: "naive",
+    llmProvider: "hf",
   }
 
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -83,6 +85,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
           timeout: typeof data.timeout === "number" && Number.isFinite(data.timeout) ? data.timeout : placeholder.timeout,
           customPrompt: typeof data.customPrompt === "string" ? data.customPrompt : placeholder.customPrompt,
           queryMode: (QUERY_MODES as readonly string[]).includes(data.queryMode) ? data.queryMode as QueryMode : placeholder.queryMode,
+          llmProvider: typeof data.llmProvider === "string" ? data.llmProvider : placeholder.llmProvider,
         }
 
         if (!ignore) {
@@ -232,7 +235,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
                   onChange={(e) =>
                     setSettings((prev) => ({
                       ...prev,
-                      timeout: Number.parseInt(e.target.value || "0", 10) || 30,
+                      timeout: Number.parseInt(e.target.value || "0", 10) || 180,
                     }))
                   }
                 />
@@ -255,6 +258,35 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
                 />
               </div>
             </div>
+
+            {/* LLM Provider */}
+            <div className="space-y-3">
+              <h3 className="text-lg font-semibold">LLM Provider</h3>
+              <div className="space-y-2">
+                <Label htmlFor="llm-provider">Default LLM Provider (local by default)</Label>
+                <Select
+                  value={settings.llmProvider}
+                  onValueChange={(value) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      llmProvider: value as AppSettings["llmProvider"],
+                    }))
+                  }
+                >
+                  <SelectTrigger id="llm-provider">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="hf">Local (Transformers / HF)</SelectItem>
+                    <SelectItem value="openrouter">OpenRouter · mistral-nemo</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Hf uses a local model (slower), Openrouter uses an external API (costs money).
+                </p>
+              </div>
+            </div>
+                
 
             {/* Action Buttons */}
             <div className="flex justify-end space-x-2 pt-4 border-t">

@@ -1,8 +1,13 @@
 # backend_generate_prompt.py
 import os
+import json
 import torch
 import asyncio
 import nest_asyncio
+from typing import Optional
+from datetime import datetime
+import requests
+
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.hf import hf_embed
@@ -12,11 +17,21 @@ from pymongo import MongoClient
 
 nest_asyncio.apply()
 
-WORKING_DIR = "/home/dbisai/Desktop/ChristiansWorkspace/RAGulate/Data"
+WORKING_DIR = "/home/dbis-ai/Desktop/ChristiansWorkspace/RAGulate-Project/Data"
 os.makedirs(WORKING_DIR, exist_ok=True)
 
-# Configure Model and tokenizer
-hf_model_name = "mistralai/Mistral-7B-Instruct-v0.2"
+# -------------------- LLM provider config --------------------
+_ALLOWED_LLM_PROVIDERS = {"hf", "openrouter"}
+
+# OpenRouter config via env (with sensible defaults)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # must be set if using openrouter
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-nemo") # set model
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")  # optional
+OPENROUTER_X_TITLE = os.getenv("OPENROUTER_X_TITLE")            # optional
+
+# Default local HF model
+hf_model_name = "mistralai/Mistral-7B-Instruct-v0.3"
 hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
 hf_model = AutoModelForCausalLM.from_pretrained(hf_model_name)
 
@@ -24,7 +39,7 @@ hf_tokenizer.pad_token = hf_tokenizer.eos_token
 hf_model.config.pad_token_id = hf_tokenizer.pad_token_id
 hf_model.eval()
 
-# -------- HF text generation helpers --------
+# -------------------- HF text generation helpers --------------------
 def _hf_generate(prompt: str) -> str:
     formatted_prompt = f"<s>[INST] {prompt} [/INST]"
     inputs = hf_tokenizer(
@@ -50,27 +65,129 @@ async def hf_model_complete(prompt: str, **kwargs) -> str:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _hf_generate, prompt)
 
-# LightRAG instance 
-_rag_instance = None
+# -------------------- MongoDB --------------------
+client = MongoClient("mongodb://localhost:27017/")
+db = client["RAGulate"]
+collection = db["chatlogs"]
+user_collection = db["usermanagement"]
+token_collection = db["tokenmanagement"]
+
+def _log_openrouter_response(doc: dict) -> None:
+    """
+    Insert a log document into db['tokenmanagement'].
+    doc should already be JSON-serializable.
+    """
+    try:
+        token_collection.insert_one(doc)
+    except Exception as e:
+        # Do not raise; logging must never break the main flow
+        print(f"[OpenRouter][Log Insert Error] {e}")
+
+# -------------------- OpenRouter (mistral-nemo) helpers --------------------
+def _openrouter_generate(prompt: str) -> str:
+    """
+    Blocking helper that calls OpenRouter Chat Completions for mistral-nemo.
+    Logs the full JSON response into db['tokenmanagement'].
+    Returns the assistant message content or raises a descriptive Exception.
+    """
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set. Export it to use llmProvider='openrouter'."
+        )
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    # Optional attribution headers
+    if OPENROUTER_HTTP_REFERER:
+        headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
+    if OPENROUTER_X_TITLE:
+        headers["X-Title"] = OPENROUTER_X_TITLE
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant integrated in a retrieval-augmented application.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 512,
+    }
+
+    resp = requests.post(
+        OPENROUTER_BASE_URL,
+        headers=headers,
+        data=json.dumps(payload),
+        timeout=60
+    )
+
+    # Try to parse JSON either way to log the raw response
+    parsed = None
+    try:
+        parsed = resp.json()
+    except Exception:
+        parsed = {"raw_text": resp.text}
+
+    # --- Log API usage to MongoDB ---
+    _log_openrouter_response({
+        "ts_utc": datetime.now(),
+        "provider": "openrouter",
+        "status_code": resp.status_code,
+        "model": OPENROUTER_MODEL,
+        "response": parsed,
+        "request_meta": {
+            "has_referer": bool(OPENROUTER_HTTP_REFERER),
+            "has_title": bool(OPENROUTER_X_TITLE),
+        }
+    })
+
+    if resp.status_code != 200:
+        # Surface a helpful error upstream
+        raise RuntimeError(f"OpenRouter error ({resp.status_code}): {parsed}")
+
+    try:
+        print(parsed)
+        return parsed["choices"][0]["message"]["content"].strip()
+    except Exception:
+        raise RuntimeError(f"Unexpected OpenRouter response structure: {parsed}")
+
+async def openrouter_complete(prompt: str, **kwargs) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _openrouter_generate, prompt)
+
+# -------------------- Dispatching LLM for LightRAG --------------------
+_LLM_PROVIDER = "hf"  # default
+
+async def llm_dispatch(prompt: str, **kwargs) -> str:
+    """
+    LightRAG will call this function. We dispatch to the selected provider.
+    """
+    provider = _LLM_PROVIDER
+    if provider == "openrouter":
+        return await openrouter_complete(prompt, **kwargs)
+    # fallback to local HF
+    return await hf_model_complete(prompt, **kwargs)
+
+# -------------------- LightRAG instance (singleton) --------------------
+_rag_instance: Optional[LightRAG] = None
 _rag_lock = asyncio.Lock()
 
 async def initialize_rag() -> LightRAG:
+    _emb_tok = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+    _emb_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
     rag = LightRAG(
         working_dir=WORKING_DIR,
-        llm_model_func=hf_model_complete,
-        llm_model_name=hf_model_name,
+        llm_model_func=llm_dispatch,
+        llm_model_name=f"dispatch:{hf_model_name}|{OPENROUTER_MODEL}",
         embedding_func=EmbeddingFunc(
             embedding_dim=384,
             max_token_size=5000,
-            func=lambda texts: hf_embed(
-                texts,
-                tokenizer=AutoTokenizer.from_pretrained(
-                    "sentence-transformers/all-MiniLM-L6-v2"
-                ),
-                embed_model=AutoModel.from_pretrained(
-                    "sentence-transformers/all-MiniLM-L6-v2"
-                ),
-            ),
+            func=lambda texts: hf_embed(texts, tokenizer=_emb_tok, embed_model=_emb_model),
         ),
     )
     await rag.initialize_storages()
@@ -86,21 +203,15 @@ async def get_rag() -> LightRAG:
                 _rag_instance = await initialize_rag()
     return _rag_instance
 
-# MongoDB 
-client = MongoClient("mongodb://localhost:27017/")
-db = client["RAGulate"]
-collection = db["chatlogs"]
-user_collection = db["usermanagement"]
-
-# Allowed query modes (must match frontend)
+# -------------------- Options & helpers --------------------
 _ALLOWED_QUERY_MODES = {"local", "global", "hybrid", "naive", "mix"}
 
-# Options & helpers
 DEFAULT_OPTIONS = {
     "chatHistory": True,
-    "timeout": 180,        # seconds
-    "customPrompt": "",   # free text
-    "queryMode": "naive", # default retrieval mode
+    "timeout": 180,         # seconds
+    "customPrompt": "",     # free text
+    "queryMode": "naive",   # default retrieval mode
+    "llmProvider": "hf",    # 'hf' or 'openrouter'
 }
 
 _HISTORY_LIMIT = 3 * 2  # number of history messages to keep at maximum
@@ -161,7 +272,14 @@ def _get_user_options(username: str | None) -> dict:
     if isinstance(qmode, str) and qmode in _ALLOWED_QUERY_MODES:
         out["queryMode"] = qmode
     else:
-        out["queryMode"] = "naive"  # hard default if missing/invalid
+        out["queryMode"] = "naive"
+
+    # llmProvider with validation
+    prov = opts.get("llmProvider")
+    if isinstance(prov, str) and prov in _ALLOWED_LLM_PROVIDERS:
+        out["llmProvider"] = prov
+    else:
+        out["llmProvider"] = "hf"
 
     return out
 
@@ -169,7 +287,6 @@ def _build_queryparam(chat_history_enabled: bool, custom_prompt: str, session_id
     """
     Build QueryParam, setting the LightRAG mode from validated query_mode.
     """
-    # Safety: ensure we only pass allowed modes; fall back to 'naive'
     mode = query_mode if query_mode in _ALLOWED_QUERY_MODES else "naive"
     qp = QueryParam(mode=mode)
 
@@ -187,8 +304,9 @@ async def _rag_query_with_timeout(rag: LightRAG, query: str, param: QueryParam, 
         return rag.query(query, param=param)
     return await asyncio.wait_for(loop.run_in_executor(None, _run), timeout=timeout_s)
 
-#  generate output is called when user sends a message
 async def generate_output(input: str, session_id: str) -> str:
+    global _LLM_PROVIDER
+
     rag = await get_rag()
 
     username = _find_username_by_session(session_id)
@@ -197,7 +315,11 @@ async def generate_output(input: str, session_id: str) -> str:
     chat_history_enabled = options["chatHistory"]
     timeout_s = options["timeout"]
     custom_prompt = options["customPrompt"]
-    query_mode = options.get("queryMode", "naive")  # extra guard
+    query_mode = options.get("queryMode", "naive")
+    llm_provider = options.get("llmProvider", "hf")
+
+    # Set provider for this request
+    _LLM_PROVIDER = llm_provider if llm_provider in _ALLOWED_LLM_PROVIDERS else "hf"
 
     param = _build_queryparam(chat_history_enabled, custom_prompt, session_id, query_mode)
 
