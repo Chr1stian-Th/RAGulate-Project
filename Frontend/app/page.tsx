@@ -17,6 +17,8 @@ import { ThemeProvider } from "./components/theme-provider"
 import { AuthModal } from "./components/auth-modal"
 import { GraphOverlay } from "../components/GraphOverlay"
 import { DocumentsModal } from "./components/documents-modal"
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Backend URL for the chat API
 const BACKEND_URL = "http://134.60.71.197:8000";
@@ -434,7 +436,25 @@ export default function GDPRChatbot() {
               )}
 
               {messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
+                // <ChatMessage key={message.id} message={message} />
+                <div
+                  key={message.id}
+                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                >
+                  <div
+                    className={`rounded-lg p-4 max-w-[min(80ch,100%)] ${
+                      message.role === "user"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-100 dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+                    }`}
+                  >
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                </div>
               ))}
 
               {isLoading && (
