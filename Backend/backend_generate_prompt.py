@@ -1,226 +1,357 @@
-# backend_generate_prompt.py
 import os
 import json
-import torch
 import asyncio
-import nest_asyncio
-from typing import Optional
+import threading
 from datetime import datetime
-import requests
+from typing import Optional, List, Dict, Any, Iterable
 
+import nest_asyncio
+import torch
+from torch.cuda import is_available as cuda_available
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
+from openai import OpenAI
+from pymongo import MongoClient
+
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.hf import hf_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status
-from pymongo import MongoClient
 
 nest_asyncio.apply()
 
 WORKING_DIR = "/home/dbis-ai/Desktop/ChristiansWorkspace/RAGulate-Project/Data"
 os.makedirs(WORKING_DIR, exist_ok=True)
 
-# -------------------- LLM provider config --------------------
-_ALLOWED_LLM_PROVIDERS = {"hf", "openrouter"}
-
-# OpenRouter config via env (with sensible defaults)
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # must be set if using openrouter
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-nemo") # set model
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_HTTP_REFERER = os.getenv("OPENROUTER_HTTP_REFERER")  # optional
-OPENROUTER_X_TITLE = os.getenv("OPENROUTER_X_TITLE")            # optional
-
-# Default local HF model
-hf_model_name = "mistralai/Mistral-7B-Instruct-v0.3"
-hf_tokenizer = AutoTokenizer.from_pretrained(hf_model_name)
-hf_model = AutoModelForCausalLM.from_pretrained(hf_model_name)
-
-hf_tokenizer.pad_token = hf_tokenizer.eos_token
-hf_model.config.pad_token_id = hf_tokenizer.pad_token_id
-hf_model.eval()
-
-# -------------------- HF text generation helpers --------------------
-def _hf_generate(prompt: str) -> str:
-    formatted_prompt = f"<s>[INST] {prompt} [/INST]"
-    inputs = hf_tokenizer(
-        formatted_prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512,
-        padding=True,
-    )
-    with torch.no_grad():
-        outputs = hf_model.generate(
-            **inputs,
-            max_new_tokens=512,
-            pad_token_id=hf_tokenizer.pad_token_id,
-            eos_token_id=hf_tokenizer.eos_token_id,
-            return_dict_in_generate=True,
-        )
-    input_len = inputs.input_ids.shape[1]
-    generated_only = outputs.sequences[0, input_len:]
-    return hf_tokenizer.decode(generated_only, skip_special_tokens=True).strip()
-
-async def hf_model_complete(prompt: str, **kwargs) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _hf_generate, prompt)
-
-# -------------------- MongoDB --------------------
+# MongoDB collections
 client = MongoClient("mongodb://localhost:27017/")
 db = client["RAGulate"]
 collection = db["chatlogs"]
 user_collection = db["usermanagement"]
 token_collection = db["tokenmanagement"]
 
-def _log_openrouter_response(doc: dict) -> None:
-    """
-    Insert a log document into db['tokenmanagement'].
-    doc should already be JSON-serializable.
-    """
-    try:
-        token_collection.insert_one(doc)
-    except Exception as e:
-        # Do not raise; logging must never break the main flow
-        print(f"[OpenRouter][Log Insert Error] {e}")
-
-# -------------------- OpenRouter (mistral-nemo) helpers --------------------
-def _openrouter_generate(prompt: str) -> str:
-    """
-    Blocking helper that calls OpenRouter Chat Completions for mistral-nemo.
-    Logs the full JSON response into db['tokenmanagement'].
-    Returns the assistant message content or raises a descriptive Exception.
-    """
-    if not OPENROUTER_API_KEY:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY is not set. Export it to use llmProvider='openrouter'."
-        )
-
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    # Optional attribution headers
-    if OPENROUTER_HTTP_REFERER:
-        headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER
-    if OPENROUTER_X_TITLE:
-        headers["X-Title"] = OPENROUTER_X_TITLE
-
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant integrated in a retrieval-augmented application.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.2,
-        "max_tokens": 512,
-    }
-
-    resp = requests.post(
-        OPENROUTER_BASE_URL,
-        headers=headers,
-        data=json.dumps(payload),
-        timeout=60
-    )
-
-    # Try to parse JSON either way to log the raw response
-    parsed = None
-    try:
-        parsed = resp.json()
-    except Exception:
-        parsed = {"raw_text": resp.text}
-
-    # --- Log API usage to MongoDB ---
-    _log_openrouter_response({
-        "ts_utc": datetime.now(),
-        "provider": "openrouter",
-        "status_code": resp.status_code,
-        "model": OPENROUTER_MODEL,
-        "response": parsed,
-        "request_meta": {
-            "has_referer": bool(OPENROUTER_HTTP_REFERER),
-            "has_title": bool(OPENROUTER_X_TITLE),
-        }
-    })
-
-    if resp.status_code != 200:
-        # Surface a helpful error upstream
-        raise RuntimeError(f"OpenRouter error ({resp.status_code}): {parsed}")
-
-    try:
-        print(parsed)
-        return parsed["choices"][0]["message"]["content"].strip()
-    except Exception:
-        raise RuntimeError(f"Unexpected OpenRouter response structure: {parsed}")
-
-async def openrouter_complete(prompt: str, **kwargs) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _openrouter_generate, prompt)
-
-# -------------------- Dispatching LLM for LightRAG --------------------
-_LLM_PROVIDER = "hf"  # default
-
-async def llm_dispatch(prompt: str, **kwargs) -> str:
-    """
-    LightRAG will call this function. We dispatch to the selected provider.
-    """
-    provider = _LLM_PROVIDER
-    if provider == "openrouter":
-        return await openrouter_complete(prompt, **kwargs)
-    # fallback to local HF
-    return await hf_model_complete(prompt, **kwargs)
-
-# -------------------- LightRAG instance (singleton) --------------------
-_rag_instance: Optional[LightRAG] = None
-_rag_lock = asyncio.Lock()
-
-async def initialize_rag() -> LightRAG:
-    _emb_tok = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-    _emb_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-
-    rag = LightRAG(
-        working_dir=WORKING_DIR,
-        llm_model_func=llm_dispatch,
-        llm_model_name=f"dispatch:{hf_model_name}|{OPENROUTER_MODEL}",
-        embedding_func=EmbeddingFunc(
-            embedding_dim=384,
-            max_token_size=5000,
-            func=lambda texts: hf_embed(texts, tokenizer=_emb_tok, embed_model=_emb_model),
-        ),
-    )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
-    print("Finished Initializing!")
-    return rag
-
-async def get_rag() -> LightRAG:
-    global _rag_instance
-    if _rag_instance is None:
-        async with _rag_lock:
-            if _rag_instance is None:
-                _rag_instance = await initialize_rag()
-    return _rag_instance
-
-# -------------------- Options & helpers --------------------
+# Allowed and default options
+_ALLOWED_LLM_PROVIDERS = {"hf", "openrouter"}
 _ALLOWED_QUERY_MODES = {"local", "global", "hybrid", "naive", "mix"}
 
 DEFAULT_OPTIONS = {
     "chatHistory": True,
     "timeout": 180,         # seconds
-    "customPrompt": "",     # free text
-    "queryMode": "naive",   # default retrieval mode
+    "customPrompt": "",     # extra instructions
+    "queryMode": "naive",   # retrieval mode
     "llmProvider": "hf",    # 'hf' or 'openrouter'
 }
 
-_HISTORY_LIMIT = 3 * 2  # number of history messages to keep at maximum
+_HISTORY_LIMIT = 6  # cap history messages passed to the LLM
 
-def get_last_conversations(collection, session_id: str):
-    return list(collection.find({"session_id": session_id}).sort("timestamp", 1))
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-nemo")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
-def format_conversation(entries):
-    conv_history = []
+HF_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
+
+_hf_tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_NAME)
+_hf_model = AutoModelForCausalLM.from_pretrained(
+    HF_MODEL_NAME,
+    device_map="auto" if cuda_available() else None,
+    dtype=torch.float16 if cuda_available() else None,
+)
+_hf_tokenizer.pad_token = _hf_tokenizer.eos_token
+_hf_model.config.pad_token_id = _hf_tokenizer.pad_token_id
+_hf_model.eval()
+
+# generation lock to avoid overlapping .generate() on same weights
+_HF_GENERATE_LOCK = threading.Lock()
+
+def _hf_build_chat_text(
+    prompt: str,
+    system_prompt: Optional[str],
+    history_messages: Optional[List[Dict[str, str]]],
+) -> str:
+    """
+    Builds a formatted chat text for HuggingFace model input.
+
+    Args:
+        prompt (str): The current user message
+        system_prompt (Optional[str]): System instructions for the model
+        history_messages (Optional[List[Dict[str, str]]]): Previous conversation messages
+
+    Returns:
+        str: Formatted chat text using the model's chat template
+
+    Note:
+        Uses the HuggingFace tokenizer's chat template for consistent formatting
+    """
+    msgs: List[Dict[str, str]] = []
+    if system_prompt:
+        msgs.append({"role": "system", "content": system_prompt})
+    if history_messages:
+        msgs.extend(
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in history_messages
+            if isinstance(m, dict)
+        )
+    msgs.append({"role": "user", "content": prompt})
+    return _hf_tokenizer.apply_chat_template(
+        msgs, tokenize=False, add_generation_prompt=True
+    )
+
+def _hf_generate_once(text_input: str, max_new_tokens: int = 512) -> str:
+    """
+    Generates a single response using the HuggingFace model.
+
+    Args:
+        text_input (str): Formatted input text
+        max_new_tokens (int): Maximum number of tokens to generate
+
+    Returns:
+        str: Generated text response
+
+    Note:
+        Uses a thread lock to prevent concurrent generation on same model weights
+    """
+    inputs = _hf_tokenizer(
+        text_input,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+    )
+    model_device = next(_hf_model.parameters()).device
+    inputs = {k: v.to(model_device) for k, v in inputs.items()}
+    with _HF_GENERATE_LOCK:
+        with torch.no_grad():
+            out = _hf_model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=_hf_tokenizer.pad_token_id,
+                eos_token_id=_hf_tokenizer.eos_token_id,
+                return_dict_in_generate=True,
+            )
+    n = inputs["input_ids"].shape[1]
+    text = _hf_tokenizer.decode(out.sequences[0, n:], skip_special_tokens=True).strip()
+    return text
+
+async def llm_model_func_hf(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    history_messages: Optional[List[Dict[str, str]]] = None,
+    **kwargs: Any,
+) -> str:
+    """
+    Asynchronous HuggingFace model generation function.
+
+    Args:
+        prompt (str): User input text
+        system_prompt (Optional[str]): System instructions
+        history_messages (Optional[List[Dict[str, str]]]): Chat history
+        **kwargs: Additional parameters
+
+    Returns:
+        str: Generated response
+
+    Note:
+        Logs API usage metrics to MongoDB
+    """
+    chat_text = _hf_build_chat_text(prompt, system_prompt, history_messages or [])
+    result = await asyncio.to_thread(_hf_generate_once, chat_text)
+    print("[HF][Answer]:", result)
+    _log_simple_api_usage("hf", HF_MODEL_NAME, len(prompt), len(result))
+    return result
+
+_emb_tok = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+_emb_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+_EMBEDDINGS = EmbeddingFunc(
+    embedding_dim=384,
+    max_token_size=5000,
+    func=lambda texts: hf_embed(texts, tokenizer=_emb_tok, embed_model=_emb_model),
+)
+
+def _log_simple_api_usage(provider: str, model: str, prompt_len: int, answer_len: int) -> None:
+    try:
+        token_collection.insert_one({
+            "provider": provider,
+            "model": model,
+            "prompt_len": prompt_len,
+            "answer_len": answer_len,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        print(f"[UsageLog][Insert Error] {e}")
+
+def _log_raw_api_response(provider: str, model: str, raw: Any) -> None:
+    try:
+        if hasattr(raw, "model_dump"):
+            payload = raw.model_dump()
+        elif hasattr(raw, "to_dict"):
+            payload = raw.to_dict()
+        else:
+            payload = json.loads(getattr(raw, "model_dump_json", lambda: "{}")())
+        token_collection.insert_one({
+            "provider": provider,
+            "model": model,
+            "raw_response": payload,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        print(f"[UsageLog][Raw Insert Error] {e}")
+
+async def llm_model_func_openrouter(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    history_messages: Optional[List[Dict[str, str]]] = None,
+    **kwargs: Any,
+) -> str:
+    """
+    Asynchronous OpenRouter API generation function.
+
+    Args:
+        prompt (str): User input text
+        system_prompt (Optional[str]): System instructions
+        history_messages (Optional[List[Dict[str, str]]]): Chat history
+        **kwargs: Additional parameters
+
+    Returns:
+        str: Generated response
+
+    Raises:
+        RuntimeError: If OPENROUTER_API_KEY is not set
+    """
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set but 'openrouter' provider was selected.")
+    client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+
+    def _do_create():
+        return client.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=[
+                *([{"role": "system", "content": system_prompt}] if system_prompt else []),
+                *(history_messages or []),
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+    completion = await asyncio.to_thread(_do_create)
+    try:
+        content = completion.choices[0].message.content or ""
+    except Exception:
+        content = ""
+    print("[OpenRouter][Answer]:", content)
+    _log_simple_api_usage("openrouter", OPENROUTER_MODEL, len(prompt), len(content))
+    _log_raw_api_response("openrouter", OPENROUTER_MODEL, completion)
+    return content
+
+_rag_hf: Optional[LightRAG] = None
+_rag_or: Optional[LightRAG] = None
+_rag_init_lock = asyncio.Lock()     # protects init
+_rag_query_lock = asyncio.Lock()    # serializes .query calls (prevents stalls)
+
+async def _initialize_rag_base(llm_model_func, llm_model_name: str) -> LightRAG:
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        llm_model_name=llm_model_name,
+        embedding_func=_EMBEDDINGS,
+    )
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+    return rag
+
+async def initialize_rag_hf() -> LightRAG:
+    rag = await _initialize_rag_base(llm_model_func_hf, f"hf:{HF_MODEL_NAME}")
+    print("LightRAG initialized with local HF generation.")
+    return rag
+
+async def initialize_rag_openrouter() -> LightRAG:
+    rag = await _initialize_rag_base(llm_model_func_openrouter, f"openrouter:{OPENROUTER_MODEL}")
+    print(f"LightRAG initialized with OpenRouter ({OPENROUTER_MODEL}).")
+    return rag
+
+async def get_rag(provider: str = "hf") -> LightRAG:
+    """
+    Gets or initializes a LightRAG instance for specified provider.
+
+    Args:
+        provider (str): LLM provider ("hf" or "openrouter")
+
+    Returns:
+        LightRAG: Initialized RAG instance
+
+    Note:
+        Uses locks to prevent concurrent initialization
+    """
+    global _rag_hf, _rag_or
+    prov = (provider or "hf").lower()
+    async with _rag_init_lock:
+        if prov == "openrouter":
+            if _rag_or is None:
+                _rag_or = await initialize_rag_openrouter()
+            return _rag_or
+        if _rag_hf is None:
+            _rag_hf = await initialize_rag_hf()
+        return _rag_hf
+
+def _find_username_by_session(session_id: str) -> Optional[str]:
+    """
+    Finds username associated with a session ID.
+
+    Args:
+        session_id (str): Session identifier
+
+    Returns:
+        Optional[str]: Username if found, None otherwise
+    """
+    doc = user_collection.find_one({"session_list": session_id}, {"_id": 0, "username": 1})
+    return (doc or {}).get("username")
+
+def _get_user_options(username: Optional[str]) -> Dict[str, Any]:
+    """
+    Retrieves and validates user-specific options.
+
+    Args:
+        username (Optional[str]): Username to get options for
+
+    Returns:
+        Dict[str, Any]: Normalized options with defaults
+    """
+    out = dict(DEFAULT_OPTIONS)
+    if not username:
+        return out
+    doc = user_collection.find_one({"username": username}, {"_id": 0, "options": 1})
+    opts = (doc or {}).get("options", {}) if doc else {}
+
+    ch = opts.get("chatHistory")
+    out["chatHistory"] = ch if isinstance(ch, bool) else DEFAULT_OPTIONS["chatHistory"]
+
+    try:
+        t = int(opts.get("timeout", DEFAULT_OPTIONS["timeout"]))
+        out["timeout"] = max(5, min(t, 600))
+    except Exception:
+        out["timeout"] = DEFAULT_OPTIONS["timeout"]
+
+    cp = opts.get("customPrompt")
+    out["customPrompt"] = cp if isinstance(cp, str) else DEFAULT_OPTIONS["customPrompt"]
+
+    qm = opts.get("queryMode")
+    out["queryMode"] = qm if isinstance(qm, str) and qm in _ALLOWED_QUERY_MODES else DEFAULT_OPTIONS["queryMode"]
+
+    prov = opts.get("llmProvider")
+    out["llmProvider"] = prov if isinstance(prov, str) and prov in _ALLOWED_LLM_PROVIDERS else DEFAULT_OPTIONS["llmProvider"]
+    return out
+
+def get_last_conversations(collection_ref, session_id: str) -> List[Dict[str, Any]]:
+    """
+    Retrieves conversation history for a session.
+
+    Args:
+        collection_ref: MongoDB collection reference
+        session_id (str): Session identifier
+
+    Returns:
+        List[Dict[str, Any]]: Conversation messages in chronological order
+    """
+    return list(collection_ref.find({"session_id": session_id}).sort("timestamp", 1))
+
+def format_conversation(entries: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+    conv_history: List[Dict[str, str]] = []
     for entry in entries[:-1]:
         conv_history.append({
             "role": entry.get("role", "user"),
@@ -228,119 +359,87 @@ def format_conversation(entries):
         })
     return conv_history[-_HISTORY_LIMIT:]
 
-def _find_username_by_session(session_id: str) -> str | None:
-    doc = user_collection.find_one(
-        {"session_list": session_id},
-        {"_id": 0, "username": 1}
-    )
-    return doc.get("username") if doc else None
-
-def _get_user_options(username: str | None) -> dict:
-    """
-    Load user options from DB, applying validation/sanitization and
-    falling back to DEFAULT_OPTIONS where necessary.
-    Ensures queryMode defaults to 'naive' if missing/invalid.
-    """
-    out = dict(DEFAULT_OPTIONS)
-    if not username:
-        return out
-
-    doc = user_collection.find_one(
-        {"username": username},
-        {"_id": 0, "options": 1}
-    )
-    opts = (doc or {}).get("options") or {}
-
-    # chatHistory
-    if isinstance(opts.get("chatHistory"), bool):
-        out["chatHistory"] = opts["chatHistory"]
-
-    # timeout (bounded int)
-    try:
-        if isinstance(opts.get("timeout"), (int, float)):
-            t = int(opts["timeout"])
-            out["timeout"] = max(5, min(300, t))
-    except Exception:
-        pass
-
-    # customPrompt
-    if isinstance(opts.get("customPrompt"), str):
-        out["customPrompt"] = opts["customPrompt"]
-
-    # queryMode with validation
-    qmode = opts.get("queryMode")
-    if isinstance(qmode, str) and qmode in _ALLOWED_QUERY_MODES:
-        out["queryMode"] = qmode
-    else:
-        out["queryMode"] = "naive"
-
-    # llmProvider with validation
-    prov = opts.get("llmProvider")
-    if isinstance(prov, str) and prov in _ALLOWED_LLM_PROVIDERS:
-        out["llmProvider"] = prov
-    else:
-        out["llmProvider"] = "hf"
-
-    return out
-
-def _build_queryparam(chat_history_enabled: bool, custom_prompt: str, session_id: str, query_mode: str):
-    """
-    Build QueryParam, setting the LightRAG mode from validated query_mode.
-    """
+def _build_queryparam(custom_prompt: str, query_mode: str) -> QueryParam:
     mode = query_mode if query_mode in _ALLOWED_QUERY_MODES else "naive"
     qp = QueryParam(mode=mode)
-
-    if custom_prompt:
+    if isinstance(custom_prompt, str) and custom_prompt.strip():
         try:
             qp.user_prompt = custom_prompt.strip()
         except Exception:
             pass
-
     return qp
 
-async def _rag_query_with_timeout(rag: LightRAG, query: str, param: QueryParam, timeout_s: int) -> str:
-    loop = asyncio.get_event_loop()
-    def _run():
-        return rag.query(query, param=param)
-    return await asyncio.wait_for(loop.run_in_executor(None, _run), timeout=timeout_s)
+async def _rag_query(rag: LightRAG, query: str, param: QueryParam, timeout_s: int) -> str:
+    """
+    Executes a RAG query with timeout and error handling.
 
-async def generate_output(input: str, session_id: str) -> str:
-    global _LLM_PROVIDER
+    Args:
+        rag (LightRAG): RAG instance
+        query (str): User query
+        param (QueryParam): Query parameters
+        timeout_s (int): Timeout in seconds
 
-    rag = await get_rag()
+    Returns:
+        str: Generated response or error message
 
+    Note:
+        Serializes queries to prevent deadlocks
+    """
+    print("[RAG][Query]:", query, "| [Param]:", getattr(param, "mode", "naive"))
+    try:
+        # Serialize LightRAG .query calls to avoid deadlocks in shared state
+        async with _rag_query_lock:
+            result = await asyncio.wait_for(asyncio.to_thread(rag.query, query, param), timeout=timeout_s)
+        print("[RAG][Result]:", result)
+        return result
+    except asyncio.TimeoutError:
+        return f"[Timeout] The request exceeded the configured timeout of {timeout_s} seconds."
+    except Exception as e:
+        msg = str(e)
+        if "shapes" in msg and "!=" in msg and "dim" in msg:
+            return (
+                "[Error] Query failed due to an embedding dimension mismatch. "
+                "Your existing indexes may have been built with a different embedding size. "
+                "Ensure you're consistently using 'sentence-transformers/all-MiniLM-L6-v2' (384-dim) "
+                "or rebuild your LightRAG storages to match."
+            )
+        return f"[Error] Query failed: {msg}"
+
+async def generate_output(user_input: str, session_id: str) -> str:
+    """
+    Main generation function that processes user input.
+
+    Args:
+        user_input (str): User's message
+        session_id (str): Session identifier
+
+    Returns:
+        str: Generated response
+
+    Note:
+        - Loads user preferences
+        - Handles chat history
+        - Manages RAG query execution
+    """
     username = _find_username_by_session(session_id)
     options = _get_user_options(username)
 
-    chat_history_enabled = options["chatHistory"]
-    timeout_s = options["timeout"]
-    custom_prompt = options["customPrompt"]
-    query_mode = options.get("queryMode", "naive")
-    llm_provider = options.get("llmProvider", "hf")
+    chat_history_enabled: bool = options.get("chatHistory", True)
+    timeout_s: int = options.get("timeout", 180)
+    custom_prompt: str = options.get("customPrompt", "")
+    query_mode: str = options.get("queryMode", "naive")
+    llm_provider: str = options.get("llmProvider", "hf")
 
-    # Set provider for this request
-    _LLM_PROVIDER = llm_provider if llm_provider in _ALLOWED_LLM_PROVIDERS else "hf"
-
-    param = _build_queryparam(chat_history_enabled, custom_prompt, session_id, query_mode)
+    rag = await get_rag(llm_provider)
+    param = _build_queryparam(custom_prompt, query_mode)
 
     if chat_history_enabled:
         raw_entries = get_last_conversations(collection, session_id)
         conv_history = format_conversation(raw_entries)
-        history_length = len(conv_history)
-        if history_length > 0:
-            history_turns = min((history_length // 2), 3)
+        if conv_history:
             try:
                 param.conversation_history = conv_history
-                param.history_turns = history_turns
             except Exception:
                 pass
 
-    try:
-        result = await _rag_query_with_timeout(rag, input, param, timeout_s)
-    except asyncio.TimeoutError:
-        return f"[Timeout] The request exceeded the configured timeout of {timeout_s} seconds."
-    except Exception as e:
-        return f"[Error] Query failed: {e}"
-
-    print(result)
-    return result
+    return await _rag_query(rag, user_input, param, timeout_s)

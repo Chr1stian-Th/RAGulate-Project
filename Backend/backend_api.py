@@ -6,16 +6,86 @@ import json
 from datetime import datetime
 import uuid
 from werkzeug.utils import secure_filename
-from backend_generate_prompt import generate_output
+from backend_generate_prompt import generate_output  # async inside; we will run on a shared loop
 from backend_documents import insert_uploaded_files_to_rag, read_kv_store_status
 import asyncio
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pymongo import MongoClient
 import signal
+import threading
+import atexit
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# Configuration
+_loop = None
+_loop_thread = None
+_LOOP_STOP = threading.Event()
+
+def _loop_worker():
+    """
+    Creates and runs a new asyncio event loop in a separate thread.
+    This loop is used for handling asynchronous operations throughout the application.
+    """
+    global _loop
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+    _loop.run_forever()
+
+def ensure_loop_started():
+    """
+    Ensures that the asyncio event loop is running in a background thread.
+    Creates a new loop thread if one doesn't exist or if the existing thread is not alive.
+    """
+    global _loop_thread
+    if _loop_thread and _loop_thread.is_alive():
+        return
+    _loop_thread = threading.Thread(target=_loop_worker, name="asyncio-loop", daemon=True)
+    _loop_thread.start()
+
+def run_async(coro, *, timeout=None):
+    """
+    Runs an asynchronous coroutine on the persistent event loop with an optional timeout.
+
+    Args:
+        coro: The coroutine to run
+        timeout (float, optional): Maximum execution time in seconds
+
+    Returns:
+        The result of the coroutine execution
+
+    Raises:
+        TimeoutError: If the execution exceeds the specified timeout
+        Exception: Any exception raised within the coroutine
+    """
+    ensure_loop_started()
+    fut = asyncio.run_coroutine_threadsafe(coro, _loop)
+    try:
+        return fut.result(timeout=timeout)
+    except FuturesTimeout:
+        fut.cancel()
+        raise TimeoutError(f"Async task exceeded timeout of {timeout} seconds")
+    except Exception as e:
+        # Unwrap exceptions raised inside the coroutine
+        raise e
+
+def _graceful_shutdown(*_args):
+    """
+    Handles graceful shutdown of the asyncio event loop.
+    Called when receiving SIGINT or SIGTERM signals, or during normal program exit.
+    """
+    try:
+        if _loop and _loop.is_running():
+            _loop.call_soon_threadsafe(_loop.stop)
+    finally:
+        _LOOP_STOP.set()
+
+# Register clean exit
+signal.signal(signal.SIGINT, _graceful_shutdown)
+signal.signal(signal.SIGTERM, _graceful_shutdown)
+atexit.register(_graceful_shutdown)
+
+
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx', 'csv', 'xlsx'}
 MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16MB max file size
@@ -40,8 +110,52 @@ collection = db["chatlogs"]
 # Collection for user management
 user_collection = db["usermanagement"]
 
+
+def allowed_file(filename):
+    """
+    Checks if a given filename has an allowed extension.
+
+    Args:
+        filename (str): Name of the file to check
+
+    Returns:
+        bool: True if file extension is allowed, False otherwise
+    """
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def generate_gdpr_response(message, session_id, timeout_s: int):
+    """
+    Generates a GDPR-related response using the RAG system.
+
+    Args:
+        message (str): User's input message
+        session_id (str): Unique session identifier
+        timeout_s (int): Timeout in seconds for the response generation
+
+    Returns:
+        str: Generated response from the RAG system
+
+    Raises:
+        TimeoutError: If response generation exceeds timeout
+    """
+    return run_async(generate_output(message, session_id), timeout=timeout_s)
+
+
 @app.route('/api/register', methods=['POST'])
 def register():
+    """
+    Handles user registration with username and password.
+
+    Request Body:
+        JSON with username and password fields
+
+    Returns:
+        JSON response with success message or error details
+        201: Registration successful
+        400: Missing credentials
+        409: Username already exists
+        500: Server error
+    """
     try:
         data = request.get_json()
         username = data.get('username')
@@ -68,9 +182,23 @@ def register():
     except Exception as e:
         print(f"Error in /api/register: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
-    
+
 @app.route('/api/login', methods=['POST'])
 def login():
+    """
+    Handles user authentication.
+
+    Request Body:
+        JSON with username and password fields
+
+    Returns:
+        JSON response with success message or error details
+        200: Login successful
+        400: Missing credentials
+        401: Invalid password
+        404: User not found
+        500: Server error
+    """
     try:
         data = request.get_json()
         username = data.get('username')
@@ -94,33 +222,44 @@ def login():
         print(f"Error in /api/login: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
 
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def generate_gdpr_response(message, session_id):
-    # Run async RAG query in sync Flask context
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        response_task = asyncio.ensure_future(generate_output(message, session_id))
-        return response_task.result()
-    else:
-        return loop.run_until_complete(generate_output(message, session_id))
-
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    """
+    Handles chat messages and generates AI responses using RAG system.
+
+    Request Body:
+        JSON with:
+        - message: User's input text
+        - sessionId: Session identifier (optional)
+        - userName: User's name
+        - timestamp: Message timestamp (optional)
+
+    Returns:
+        JSON with:
+        - answer: AI generated response
+        - sessionId: Session identifier
+        - timestamp: Response timestamp
+        
+    Notes:
+        - Creates new sessions for users if needed
+        - Logs both user messages and AI responses
+        - Supports configurable timeout per user
+    """
     try:
-        # Get form data
         data = request.get_json(force=True)  # parses JSON body
         message = data.get('message', '')
         session_id = data.get('sessionId', str(uuid.uuid4()))
         timestamp = data.get('timestamp', datetime.now().isoformat())
         user_name = data.get('userName', '')
 
-        # Check if a new session was created
-        # If session_id is new, create a new session entry for this user
+        # Determine timeout per request: from stored options if available
+        user_doc = user_collection.find_one({"username": user_name}, {"_id": 0, "options": 1})
+        timeout_s = int(((user_doc or {}).get("options") or {}).get("timeout", 180))
+        if timeout_s < 5 or timeout_s > 600:
+            timeout_s = 180
+
+        # If this session is new for the user, attach it
         if not user_collection.find_one({"username": user_name, "session_list": session_id}):
-            # Check if session_id already exists
             exists = collection.find_one({"session_id": session_id}, {"_id": 1}) is not None
             if not exists:
                 user_collection.update_one(
@@ -128,8 +267,8 @@ def chat():
                     {"$addToSet": {"session_list": session_id}},
                     upsert=True
                 )
-        
-        #user message
+
+        # Log user message
         user_data = {
             'role': 'user',
             'content': message,
@@ -137,16 +276,13 @@ def chat():
             'session_id': session_id,
             'user_name': user_name
         }
-        #Insert Data
         result_user = collection.insert_one(user_data)
-
-        #Show the inserted Document ID
         print("Inserted Doc ID:", result_user.inserted_id)
-        
-        # Generate LLM response
-        ai_response = generate_gdpr_response(message, session_id)
-        
-        # Add LLM response to database
+
+        # Generate LLM response (on persistent loop)
+        ai_response = generate_gdpr_response(message, session_id, timeout_s)
+
+        # Store assistant response
         assistant_message = {
             'role': 'assistant',
             'content': ai_response,
@@ -154,18 +290,17 @@ def chat():
             'session_id': session_id,
             'user_name': user_name
         }
-        #Insert Data
         result_assistant = collection.insert_one(assistant_message)
-
-        #Show the inserted Document ID
         print("Inserted Doc ID:", result_assistant.inserted_id)
-        
+
         return jsonify({
             'answer': ai_response,
             'sessionId': session_id,
             'timestamp': datetime.now().isoformat(),
         })
-        
+
+    except TimeoutError as te:
+        return jsonify({'error': 'timeout', 'details': str(te)}), 504
     except Exception as e:
         print(f"Error processing chat request: {str(e)}")
         return jsonify({
@@ -176,8 +311,22 @@ def chat():
 @app.route('/api/documents/insert', methods=['POST'])
 def api_documents_insert():
     """
-    Upload file(s) and insert up to MAX_DOCS_PER_INSERT into LightRAG.
-    Accepts multipart/form-data with one or more files; we look for keys starting with 'file'.
+    Handles document uploads and insertion into the RAG system.
+
+    Request:
+        multipart/form-data with files (keys starting with 'file')
+
+    Returns:
+        JSON with insertion summary or error details
+        200: Upload and insertion successful
+        400: No valid files uploaded
+        500: Server error
+        504: Operation timeout
+
+    Notes:
+        - Supports multiple file uploads
+        - Enforces file type restrictions
+        - Limits number of documents per insert
     """
     try:
         incoming_files = []
@@ -199,16 +348,12 @@ def api_documents_insert():
         if not incoming_files:
             return jsonify({'error': 'No valid files uploaded.'}), 400
 
-        # Run the async insertion
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            task = asyncio.ensure_future(insert_uploaded_files_to_rag(incoming_files, MAX_DOCS_PER_INSERT))
-            summary = task.result()
-        else:
-            summary = loop.run_until_complete(insert_uploaded_files_to_rag(incoming_files, MAX_DOCS_PER_INSERT))
+        summary = run_async(insert_uploaded_files_to_rag(incoming_files, MAX_DOCS_PER_INSERT), timeout=900)
 
         return jsonify({'message': 'Insertion completed.', 'summary': summary}), 200
 
+    except TimeoutError as te:
+        return jsonify({'error': 'timeout', 'details': str(te)}), 504
     except Exception as e:
         print(f"Error in /api/documents/insert: {str(e)}")
         return jsonify({'error': 'Failed to insert documents', 'details': str(e)}), 500
@@ -216,15 +361,23 @@ def api_documents_insert():
 @app.route('/api/documents/list', methods=['GET'])
 def api_documents_list():
     """
-    Return the contents of LightRAG's kv_store_doc_status.json.
+    Retrieves list of documents currently in the RAG system.
+
+    Returns:
+        JSON with:
+        - List of documents and their metadata
+        - Sorted by update timestamp (newest first)
+        
+    Status Codes:
+        200: Success
+        404: Status file not found
+        500: Server error
     """
     content = read_kv_store_status(KV_STATUS_PATH)
-    # Handle read errors directly
     if isinstance(content, dict) and 'error' in content:
         status_code = 404 if content.get('error') == 'status_file_not_found' else 500
         return jsonify(content), status_code
 
-    # Transform: omit large 'content' field and sort by 'updated_at'
     try:
         items = []
         if isinstance(content, dict):
@@ -238,14 +391,11 @@ def api_documents_list():
             ts = entry.get('updated_at')
             if isinstance(ts, str):
                 try:
-                    # Support both Z and offset ISO strings
                     return datetime.fromisoformat(ts.replace('Z', '+00:00'))
                 except Exception:
                     pass
-            # Put entries with missing/invalid timestamp at the beginning of the list when sorting descending by returning minimal time
             return datetime.min
 
-        # Sort by updated_at descending (newest first)
         items.sort(key=parse_updated_at, reverse=True)
         return jsonify({'documents': items}), 200
     except Exception as e:
@@ -254,37 +404,69 @@ def api_documents_list():
 
 @app.route('/api/sessions/<session_id>', methods=['GET'])
 def get_session(session_id):
-    """Get chat session history"""
-    results = list(collection.find(
-        {"session_id": session_id}).sort("timestamp", 1) # 1 = ascending, -1 = descending
-    )
-    # Convert ObjectId to string
+    """
+    Retrieves all messages for a specific chat session.
+
+    Args:
+        session_id (str): Unique identifier for the chat session
+
+    Returns:
+        JSON with:
+        - List of messages in chronological order
+        - Each message contains role, content, timestamp
+
+    Status Codes:
+        200: Session found and returned
+        404: Session not found
+    """
+    results = list(collection.find({"session_id": session_id}).sort("timestamp", 1))
     for result in results:
         result["_id"] = str(result["_id"])
-
-    if results: 
+    if results:
         return jsonify(results)
     else:
         return jsonify({'error': 'Session not found'}), 404
 
 @app.route('/api/sessions', methods=['GET'])
 def list_sessions():
-    """List all chat session_ids of a user from user_collection"""
+    """
+    Retrieves all chat sessions for a specific user.
+
+    Query Parameters:
+        username (str): Username to fetch sessions for
+
+    Returns:
+        JSON with:
+        - List of session IDs belonging to the user
+
+    Status Codes:
+        200: Sessions retrieved successfully
+        400: Missing username parameter
+    """
     username = request.args.get('username')
     if not username:
         return jsonify({'error': 'username query parameter is required'}), 400
 
-    # Get session list and send it back
-    doc = user_collection.find_one(
-        {'username': username},
-        {'_id': 0, 'session_list': 1}
-    )
+    doc = user_collection.find_one({'username': username}, {'_id': 0, 'session_list': 1})
     sessions = doc.get('session_list', []) if doc else []
     return jsonify({'sessions': sessions})
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
+    """
+    Basic health check endpoint for monitoring system status.
+
+    Returns:
+        JSON with:
+        - Current status
+        - Timestamp
+        - Configuration values
+        
+    Used for:
+        - Load balancer health checks
+        - System monitoring
+        - Configuration verification
+    """
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
@@ -293,15 +475,28 @@ def health_check():
 
 @app.route('/api/feedback', methods=['POST'])
 def submit_feedback():
+    """
+    Stores user feedback for specific chat responses.
+
+    Request Body:
+        JSON with:
+        - object_id: ID of the message being rated
+        - feedback: Rating value ("good" or "bad")
+
+    Returns:
+        JSON confirmation or error message
+
+    Status Codes:
+        200: Feedback saved successfully
+        404: Message not found
+        500: Server error
+    """
     try:
         data = request.get_json()
         object_id = data.get('object_id')
         feedback = data.get('feedback')
 
-        result = collection.update_one(
-            {'content': object_id},
-            {'$set': {'feedback': feedback}}
-        )
+        result = collection.update_one({'content': object_id}, {'$set': {'feedback': feedback}})
 
         if result.matched_count == 0:
             return jsonify({'error': 'Document not found.'}), 404
@@ -312,11 +507,25 @@ def submit_feedback():
         print(f"Error in /api/feedback: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
 
-#GRAPHML_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Data', 'graph_chunk_entity_relation.graphml')
 GRAPHML_PATH = "/home/dbis-ai/Desktop/ChristiansWorkspace/RAGulate-Project/Data/graph_chunk_entity_relation.graphml"
 @app.route('/api/graph', methods=['GET'])
 def get_graphml():
-    #Send GraphML file as plain text for frontend parsing.
+    """
+    Serves the knowledge graph visualization data.
+
+    Returns:
+        GraphML format data for visualization
+        
+    Notes:
+        - Returns plain text GraphML file
+        - Used for knowledge graph visualization in frontend
+        - Graph shows entity relationships in the knowledge base
+
+    Status Codes:
+        200: Graph data returned successfully
+        404: Graph file not found
+        500: Server error
+    """
     try:
         with open(GRAPHML_PATH, 'r', encoding='utf-8') as f:
             graphml_content = f.read()
@@ -326,28 +535,42 @@ def get_graphml():
     except Exception as e:
         print(f"Error in /api/graph: {str(e)}")
         return jsonify({'error': 'An unexpected error occurred.'}), 500
-    
+
 DEFAULT_OPTIONS = {
     "chatHistory": False,
-    "language": "en",        # allowed: en, es, fr, de
-    "timeout": 30,           # seconds
-    "customPrompt": ""       # free text
+    "language": "en",
+    "timeout": 30,
+    "customPrompt": ""
 }
 
 _ALLOWED_LANGS = {"en", "es", "fr", "de"}
 _TIMEOUT_MIN = 5
 _TIMEOUT_MAX = 300
-
 _ALLOWED_MODES = {"local", "global", "hybrid", "naive", "mix"}
 
 def _normalize_options(opts: dict) -> dict:
-    """Return a sanitized options dict merged with defaults."""
+    """
+    Normalizes and validates user options for the chat system.
+
+    Args:
+        opts (dict): Raw options dictionary from user input
+
+    Returns:
+        dict: Normalized options with validated values and defaults where necessary
+
+    Notes:
+        Validates and normalizes:
+        - Chat history preference
+        - Language selection
+        - Query mode
+        - Timeout duration
+        - Custom prompt
+        - LLM provider
+    """
     if not isinstance(opts, dict):
         opts = {}
 
-    chat_history = opts.get("chatHistory", DEFAULT_OPTIONS["chatHistory"])
-    chat_history = bool(chat_history)
-
+    chat_history = bool(opts.get("chatHistory", DEFAULT_OPTIONS["chatHistory"]))
     language = opts.get("language", DEFAULT_OPTIONS["language"])
     language = language if language in _ALLOWED_LANGS else DEFAULT_OPTIONS["language"]
 
@@ -359,8 +582,6 @@ def _normalize_options(opts: dict) -> dict:
         timeout = int(timeout)
     except Exception:
         timeout = DEFAULT_OPTIONS["timeout"]
-    timeout = max(_TIMEOUT_MIN, min(_TIME_MAX, timeout)) if ( _TIME_MAX := _TIMEOUT_MAX ) else timeout  # keep clamp explicit
-    # (Expanded for clarity; clamp to [5, 300])
     timeout = max(_TIMEOUT_MIN, min(_TIMEOUT_MAX, timeout))
 
     custom_prompt = opts.get("customPrompt", DEFAULT_OPTIONS["customPrompt"])
@@ -369,7 +590,7 @@ def _normalize_options(opts: dict) -> dict:
 
     llm_provider = opts.get("llmProvider", "hf")
     llm_provider = llm_provider if llm_provider in {"hf", "openrouter"} else "hf"
-    
+
     return {
         "chatHistory": chat_history,
         "language": language,
@@ -382,8 +603,22 @@ def _normalize_options(opts: dict) -> dict:
 @app.route('/getOptions', methods=['GET'])
 def get_options():
     """
-    Returns the user's options. If user or options are missing,
-    returns DEFAULT_OPTIONS. Query param: ?username=alice
+    Retrieves user-specific chat configuration options.
+
+    Query Parameters:
+        username (str): User to get options for
+
+    Returns:
+        JSON with user preferences:
+        - Chat history enabled/disabled
+        - Language selection
+        - Query mode
+        - Response timeout
+        - Custom prompt
+        - LLM provider
+
+    Notes:
+        Returns default options if user has no saved preferences
     """
     username = request.args.get('username', '').strip()
     if not username:
@@ -391,16 +626,28 @@ def get_options():
 
     user = user_collection.find_one({"username": username}, {"_id": 0, "options": 1})
     if not user or "options" not in user:
-        # No stored options → return defaults
         return jsonify(DEFAULT_OPTIONS), 200
-
     return jsonify(_normalize_options(user["options"])), 200
 
 @app.route('/setOptions', methods=['POST'])
 def set_options():
     """
-    Stores the user's options document under user.options.
-    Body: { "username": "alice", "options": { chatHistory, language, timeout, queryMode, customPrompt } }
+    Updates user-specific chat configuration options.
+
+    Request Body:
+        JSON with:
+        - username: User to update options for
+        - options: Dictionary of option values to set
+
+    Returns:
+        JSON with:
+        - Confirmation message
+        - Normalized options that were saved
+
+    Notes:
+        - Validates and normalizes all incoming options
+        - Creates user profile if it doesn't exist
+        - Preserves existing options not included in update
     """
     try:
         data = request.get_json(force=True) or {}
@@ -410,10 +657,8 @@ def set_options():
         if not username:
             return jsonify({"error": "username is required"}), 400
 
-        # Normalize / validate and then persist
         options_clean = _normalize_options(options_in)
 
-        # Ensure the user record exists (upsert) and set options
         user_collection.update_one(
             {"username": username},
             {"$set": {"options": options_clean}},
@@ -430,4 +675,5 @@ if __name__ == '__main__':
     print(f"Upload folder: {UPLOAD_FOLDER}")
     print(f"Allowed file extensions: {ALLOWED_EXTENSIONS}")
     print(f"Max docs per insert to LightRAG: {MAX_DOCS_PER_INSERT}")
-    app.run(host='134.60.71.197', port=8000)
+    ensure_loop_started()
+    app.run(host='134.60.71.197', port=8000, debug=False, use_reloader=False)
