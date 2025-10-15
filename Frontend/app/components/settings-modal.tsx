@@ -26,6 +26,7 @@ interface AppSettings {
   timeout: number
   customPrompt: string
   queryMode: QueryMode
+  responseType: string
   llmProvider: string
 }
 
@@ -42,6 +43,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
     timeout: 180,
     customPrompt: "",
     queryMode: "naive",
+    responseType: "Multiple Paragraphs",
     llmProvider: "hf",
   }
 
@@ -85,6 +87,7 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
           timeout: typeof data.timeout === "number" && Number.isFinite(data.timeout) ? data.timeout : placeholder.timeout,
           customPrompt: typeof data.customPrompt === "string" ? data.customPrompt : placeholder.customPrompt,
           queryMode: (QUERY_MODES as readonly string[]).includes(data.queryMode) ? data.queryMode as QueryMode : placeholder.queryMode,
+          responseType: typeof data.responseType === "string" ? data.responseType : placeholder.responseType,
           llmProvider: typeof data.llmProvider === "string" ? data.llmProvider : placeholder.llmProvider,
         }
 
@@ -243,6 +246,29 @@ export function SettingsModal({ onClose, username }: SettingsModalProps) {
             </div>
 
             <Separator />
+
+            {/* Response Type */}
+            <div className="space-y-3">
+              <h3 className="text-lg font-semibold">Response Type</h3>
+              <div className="space-y-2">
+                <Label>Defines the response format</Label>
+                <Select
+                  value={settings.responseType}
+                  onValueChange={(value) =>
+                    setSettings((prev) => ({ ...prev, responseType: value as string }))
+                  }
+                >
+                  <SelectTrigger id="responseType">
+                    <SelectValue placeholder="Choose mode" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Multiple Paragraphs">Multiple Paragraphs</SelectItem>
+                    <SelectItem value="Sinlge Paragraph">Single Paragraph</SelectItem>
+                    <SelectItem value="Bullet Points">Bullet Points</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
 
             {/* Custom Prompt */}
             <div className="space-y-3">

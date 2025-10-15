@@ -359,12 +359,17 @@ def format_conversation(entries: Iterable[Dict[str, Any]]) -> List[Dict[str, str
         })
     return conv_history[-_HISTORY_LIMIT:]
 
-def _build_queryparam(custom_prompt: str, query_mode: str) -> QueryParam:
+def _build_queryparam(custom_prompt: str, query_mode: str, responseType: str) -> QueryParam:
     mode = query_mode if query_mode in _ALLOWED_QUERY_MODES else "naive"
     qp = QueryParam(mode=mode)
     if isinstance(custom_prompt, str) and custom_prompt.strip():
         try:
             qp.user_prompt = custom_prompt.strip()
+        except Exception:
+            pass
+    if isinstance(responseType, str) and responseType.strip():
+        try:
+            qp.response_type = responseType.strip()
         except Exception:
             pass
     return qp
@@ -385,7 +390,7 @@ async def _rag_query(rag: LightRAG, query: str, param: QueryParam, timeout_s: in
     Note:
         Serializes queries to prevent deadlocks
     """
-    print("[RAG][Query]:", query, "| [Param]:", getattr(param, "mode", "naive"))
+    print("[RAG][Query]:", query, "| [Param]:", getattr(param, "mode", "naive"), getattr(param, "response_type", "Multiple Paragraphs"))
     try:
         # Serialize LightRAG .query calls to avoid deadlocks in shared state
         async with _rag_query_lock:
@@ -428,10 +433,11 @@ async def generate_output(user_input: str, session_id: str) -> str:
     timeout_s: int = options.get("timeout", 180)
     custom_prompt: str = options.get("customPrompt", "")
     query_mode: str = options.get("queryMode", "naive")
+    responseType: str = options.get("responseType", "Multiple Paragraphs")
     llm_provider: str = options.get("llmProvider", "hf")
 
     rag = await get_rag(llm_provider)
-    param = _build_queryparam(custom_prompt, query_mode)
+    param = _build_queryparam(custom_prompt, query_mode, responseType)
 
     if chat_history_enabled:
         raw_entries = get_last_conversations(collection, session_id)

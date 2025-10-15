@@ -565,6 +565,7 @@ def _normalize_options(opts: dict) -> dict:
         - Query mode
         - Timeout duration
         - Custom prompt
+        - Response Type
         - LLM provider
     """
     if not isinstance(opts, dict):
@@ -588,6 +589,8 @@ def _normalize_options(opts: dict) -> dict:
     if not isinstance(custom_prompt, str):
         custom_prompt = DEFAULT_OPTIONS["customPrompt"]
 
+    responseType = opts.get("responseType", "Multiple Paragraphs")
+
     llm_provider = opts.get("llmProvider", "hf")
     llm_provider = llm_provider if llm_provider in {"hf", "openrouter"} else "hf"
 
@@ -597,6 +600,7 @@ def _normalize_options(opts: dict) -> dict:
         "queryMode": queryMode,
         "timeout": timeout,
         "customPrompt": custom_prompt,
+        "responseType": responseType,
         "llmProvider": llm_provider,
     }
 
