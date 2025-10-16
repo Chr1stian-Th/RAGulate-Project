@@ -1,6 +1,8 @@
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { User, Shield, Paperclip, Copy, ThumbsUp, ThumbsDown } from "lucide-react"
 import { useState } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 
 interface Message {
   id: string
@@ -75,7 +77,9 @@ export function ChatMessage({ message }: ChatMessageProps) {
             )}
 
             <div className="whitespace-pre-wrap relative">
-              {message.content}
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {message.content}
+              </ReactMarkdown>
               {/* Copy and feedback buttons for assistant messages only */}
               {!isUser && (
                 <div className="flex gap-2 mt-2 items-center">
