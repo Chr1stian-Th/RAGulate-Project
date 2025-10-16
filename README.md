@@ -54,6 +54,8 @@ RAGulate is a Masters project implementing a Legal Question-Answering chatbot us
 - Sessions all have the same name, different names could be implemented
 - The openrouter API allows streaming of information (you see progress while the prompt is processed) -> this could be implemented to improve user experience
 - BUG: Graceful shutdown in the Backend is not working as of now (Killing the process works but is obviously not optimal)
+- Use Rerank Function for better RAG performance
+- Implement better markdown rendering style for better User experience (bullet points and such)
 
 ## Installation Guide
 
